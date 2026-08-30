@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 
-const API_BASE = "https://web-production-85687.up.railway.app"; // will update to Railway URL later
+const API_BASE = "https://web-production-85687.up.railway.app";
+const API_KEY = "b992ade888f7ab84daa201652affebc979e7458cb631d31d79fdb70b0c1a6883"; // same value as APP_API_KEY in Railway
 
 const STEP_LABELS = {
   classify_intent: "Understanding your question",
@@ -53,6 +54,7 @@ function App() {
     try {
       const res = await fetch(`${API_BASE}/api/upload`, {
         method: "POST",
+        headers: { "X-API-Key": API_KEY },
         body: formData,
       });
 
@@ -93,7 +95,10 @@ function App() {
     try {
       const res = await fetch(`${API_BASE}/api/chat/stream`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "X-API-Key": API_KEY,
+        },
         body: JSON.stringify({ question, audience, session_id: sessionId }),
       });
 
