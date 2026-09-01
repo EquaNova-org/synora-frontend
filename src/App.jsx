@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { SignedIn, SignedOut, SignInButton, UserButton, useAuth } from "@clerk/clerk-react";
 
 const API_BASE = "https://web-production-85687.up.railway.app";
-const API_KEY = "b992ade888f7ab84daa201652affebc979e7458cb631d31d79fdb70b0c1a6883"; // same value as APP_API_KEY in Railway
+const API_KEY = import.meta.env.VITE_APP_API_KEY;
 
 const STEP_LABELS = {
   classify_intent: "Understanding your question",
