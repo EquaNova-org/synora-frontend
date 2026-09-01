@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from "react";
+import { SignedIn, SignedOut, SignInButton, UserButton, useAuth } from "@clerk/clerk-react";
 
 const API_BASE = "https://web-production-85687.up.railway.app";
 const API_KEY = "b992ade888f7ab84daa201652affebc979e7458cb631d31d79fdb70b0c1a6883"; // same value as APP_API_KEY in Railway
@@ -17,6 +18,8 @@ const STEP_LABELS = {
 };
 
 function App() {
+  const { getToken } = useAuth();
+
   const [audience, setAudience] = useState("individual");
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
@@ -52,9 +55,14 @@ function App() {
     if (sessionId) formData.append("session_id", sessionId);
 
     try {
+      const token = await getToken();
+
       const res = await fetch(`${API_BASE}/api/upload`, {
         method: "POST",
-        headers: { "X-API-Key": API_KEY },
+        headers: {
+          "X-API-Key": API_KEY,
+          "Authorization": `Bearer ${token}`,
+        },
         body: formData,
       });
 
@@ -93,11 +101,14 @@ function App() {
     setCurrentStep(null);
 
     try {
+      const token = await getToken();
+
       const res = await fetch(`${API_BASE}/api/chat/stream`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           "X-API-Key": API_KEY,
+          "Authorization": `Bearer ${token}`,
         },
         body: JSON.stringify({ question, audience, session_id: sessionId }),
       });
@@ -150,10 +161,11 @@ function App() {
         ]);
       }
     } catch (err) {
+      console.error("STREAM ERROR:", err);
       setMessages((prev) => [
         ...prev,
         { role: "assistant", text: "Something went wrong. Please try again.", error: true },
-      ]);
+        ]);
     } finally {
       setLoading(false);
       setCurrentStep(null);
@@ -170,107 +182,130 @@ function App() {
   return (
     <div style={styles.page}>
       <GlobalStyle />
-      <div style={styles.container}>
-        <div style={styles.header}>
-          <div style={styles.logo}>S</div>
-          <h1 style={styles.title}>Synora</h1>
-          <p style={styles.subtitle}>Evidence-grounded health guidance</p>
-        </div>
 
-        <div style={styles.audienceBox}>
-          <p style={styles.audienceLabel}>Who are you checking in as?</p>
-          <div style={styles.audienceButtons}>
-            {["individual", "employee", "doctor"].map((option) => (
+      <SignedOut>
+        <div style={styles.container}>
+          <div style={styles.header}>
+            <div style={styles.logo}>S</div>
+            <h1 style={styles.title}>Synora</h1>
+            <p style={styles.subtitle}>Evidence-grounded health guidance</p>
+          </div>
+          <p style={{ textAlign: "center", fontSize: "13px", color: "#7c8b87", marginBottom: "1rem" }}>
+            Please sign in to continue.
+          </p>
+          <SignInButton mode="modal">
+            <button style={styles.sendButton}>Sign In</button>
+          </SignInButton>
+        </div>
+      </SignedOut>
+
+      <SignedIn>
+        <div style={{ ...styles.container, position: "relative" }}>
+          <div style={{ position: "absolute", top: "1rem", right: "1rem" }}>
+            <UserButton />
+          </div>
+
+          <div style={styles.header}>
+            <div style={styles.logo}>S</div>
+            <h1 style={styles.title}>Synora</h1>
+            <p style={styles.subtitle}>Evidence-grounded health guidance</p>
+          </div>
+
+          <div style={styles.audienceBox}>
+            <p style={styles.audienceLabel}>Who are you checking in as?</p>
+            <div style={styles.audienceButtons}>
+              {["individual", "employee", "doctor"].map((option) => (
+                <button
+                  key={option}
+                  onClick={() => setAudience(option)}
+                  style={{
+                    ...styles.audienceButton,
+                    ...(audience === option ? styles.audienceButtonActive : {}),
+                  }}
+                >
+                  {option.charAt(0).toUpperCase() + option.slice(1)}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {uploadedFileName && (
+            <div style={styles.fileChip}>
+              <span>📄 {uploadedFileName}</span>
               <button
-                key={option}
-                onClick={() => setAudience(option)}
+                onClick={() => { setSessionId(null); setUploadedFileName(null); }}
+                style={styles.fileChipRemove}
+              >
+                ×
+              </button>
+            </div>
+          )}
+
+          <div style={styles.chatWindow}>
+            {messages.length === 0 && (
+              <p style={styles.emptyState}>Ask a health question to get started.</p>
+            )}
+            {messages.map((msg, i) => (
+              <div
+                key={i}
                 style={{
-                  ...styles.audienceButton,
-                  ...(audience === option ? styles.audienceButtonActive : {}),
+                  ...styles.bubble,
+                  ...(msg.role === "user" ? styles.userBubble : styles.assistantBubble),
                 }}
               >
-                {option.charAt(0).toUpperCase() + option.slice(1)}
-              </button>
+                {msg.text}
+                {msg.role === "assistant" && (msg.severity || msg.triage) && (
+                  <div style={styles.badgeRow}>
+                    {msg.severity && (
+                      <span style={styles.badge}>Severity: {msg.severity}</span>
+                    )}
+                    {msg.triage && (
+                      <span style={styles.badge}>Triage: {msg.triage.replaceAll("_", " ")}</span>
+                    )}
+                  </div>
+                )}
+              </div>
             ))}
+            {loading && (
+              <p style={styles.loadingText}>
+                {currentStep ? STEP_LABELS[currentStep] || "Processing..." : "Starting..."}
+              </p>
+            )}
+            <div ref={bottomRef} />
           </div>
-        </div>
 
-        {uploadedFileName && (
-          <div style={styles.fileChip}>
-            <span>📄 {uploadedFileName}</span>
+          <div style={styles.inputRow}>
+            <input
+              type="file"
+              accept="application/pdf"
+              ref={fileInputRef}
+              onChange={handleFileUpload}
+              style={{ display: "none" }}
+            />
             <button
-              onClick={() => { setSessionId(null); setUploadedFileName(null); }}
-              style={styles.fileChipRemove}
+              onClick={() => fileInputRef.current.click()}
+              style={styles.uploadButton}
+              disabled={uploading}
+              title="Upload a document"
             >
-              ×
+              +
+            </button>
+            <input
+              type="text"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder="Ask a health question"
+              style={styles.input}
+            />
+            <button onClick={sendMessage} style={styles.sendButton} disabled={loading}>
+              Send
             </button>
           </div>
-        )}
 
-        <div style={styles.chatWindow}>
-          {messages.length === 0 && (
-            <p style={styles.emptyState}>Ask a health question to get started.</p>
-          )}
-          {messages.map((msg, i) => (
-            <div
-              key={i}
-              style={{
-                ...styles.bubble,
-                ...(msg.role === "user" ? styles.userBubble : styles.assistantBubble),
-              }}
-            >
-              {msg.text}
-              {msg.role === "assistant" && (msg.severity || msg.triage) && (
-                <div style={styles.badgeRow}>
-                  {msg.severity && (
-                    <span style={styles.badge}>Severity: {msg.severity}</span>
-                  )}
-                  {msg.triage && (
-                    <span style={styles.badge}>Triage: {msg.triage.replaceAll("_", " ")}</span>
-                  )}
-                </div>
-              )}
-            </div>
-          ))}
-          {loading && (
-            <p style={styles.loadingText}>
-              {currentStep ? STEP_LABELS[currentStep] || "Processing..." : "Starting..."}
-            </p>
-          )}
-          <div ref={bottomRef} />
+          <p style={styles.disclaimer}>Not a substitute for professional medical advice.</p>
         </div>
-
-        <div style={styles.inputRow}>
-          <input
-            type="file"
-            accept="application/pdf"
-            ref={fileInputRef}
-            onChange={handleFileUpload}
-            style={{ display: "none" }}
-          />
-          <button
-            onClick={() => fileInputRef.current.click()}
-            style={styles.uploadButton}
-            disabled={uploading}
-            title="Upload a document"
-          >
-            +
-          </button>
-          <input
-            type="text"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder="Ask a health question"
-            style={styles.input}
-          />
-          <button onClick={sendMessage} style={styles.sendButton} disabled={loading}>
-            Send
-          </button>
-        </div>
-
-        <p style={styles.disclaimer}>Not a substitute for professional medical advice.</p>
-      </div>
+      </SignedIn>
     </div>
   );
 }
