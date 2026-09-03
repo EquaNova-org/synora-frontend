@@ -196,6 +196,17 @@ function App() {
           <SignInButton mode="modal">
             <button style={styles.sendButton}>Sign In</button>
           </SignInButton>
+          <p style={styles.legalConsent}>
+            By signing in, you agree to our{" "}
+            <a href="/terms-of-service.html" target="_blank" rel="noopener noreferrer" style={styles.legalLink}>
+              Terms of Service
+            </a>{" "}
+            and{" "}
+            <a href="/privacy-policy.html" target="_blank" rel="noopener noreferrer" style={styles.legalLink}>
+              Privacy Policy
+            </a>.
+          </p>
+          <Footer />
         </div>
       </SignedOut>
 
@@ -304,6 +315,7 @@ function App() {
           </div>
 
           <p style={styles.disclaimer}>Not a substitute for professional medical advice.</p>
+          <Footer />
         </div>
       </SignedIn>
     </div>
@@ -471,7 +483,41 @@ const styles = {
     textAlign: "center",
     marginTop: "12px",
   },
+  legalConsent: {
+    fontSize: "11px",
+    color: "#a8b3af",
+    textAlign: "center",
+    marginTop: "12px",
+    lineHeight: 1.6,
+  },
+  legalLink: {
+    color: "#5f8f83",
+    textDecoration: "underline",
+  },
+  footer: {
+    display: "flex",
+    justifyContent: "center",
+    gap: "8px",
+    marginTop: "16px",
+    fontSize: "11px",
+    color: "#a8b3af",
+  },
+  footerDot: {
+    color: "#c7d0cd",
+  },
 };
+
+const Footer = () => (
+  <div style={styles.footer}>
+    <a href="/privacy-policy.html" target="_blank" rel="noopener noreferrer" style={styles.legalLink}>
+      Privacy Policy
+    </a>
+    <span style={styles.footerDot}>·</span>
+    <a href="/terms-of-service.html" target="_blank" rel="noopener noreferrer" style={styles.legalLink}>
+      Terms of Service
+    </a>
+  </div>
+);
 
 const GlobalStyle = () => (
   <style>{`
