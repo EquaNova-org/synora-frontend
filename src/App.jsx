@@ -29,6 +29,12 @@ function App() {
   const [uploadedFileName, setUploadedFileName] = useState(null);
   const [uploading, setUploading] = useState(false);
 
+  const [employeeProfile, setEmployeeProfile] = useState(null);
+  const [profileLoading, setProfileLoading] = useState(false);
+  const [showProfileForm, setShowProfileForm] = useState(false);
+  const [showCheckin, setShowCheckin] = useState(false);
+  const [checkinSubmitting, setCheckinSubmitting] = useState(false);
+
   const bottomRef = useRef(null);
   const fileInputRef = useRef(null);
 
@@ -90,6 +96,90 @@ function App() {
       e.target.value = "";
     }
   };
+
+  const fetchEmployeeProfile = async () => {
+    setProfileLoading(true);
+    try {
+      const token = await getToken();
+      const res = await fetch(`${API_BASE}/api/employee/profile`, {
+        headers: { "X-API-Key": API_KEY, "Authorization": `Bearer ${token}` },
+      });
+
+      if (res.status === 404) {
+        setEmployeeProfile(null);
+        setShowProfileForm(true);
+      } else if (res.ok) {
+        const data = await res.json();
+        setEmployeeProfile(data);
+        setShowProfileForm(data.context_stale);
+      }
+    } catch (err) {
+      console.error("Failed to load employee profile:", err);
+    } finally {
+      setProfileLoading(false);
+    }
+  };
+
+  const saveEmployeeProfile = async (formValues) => {
+    try {
+      const token = await getToken();
+      const res = await fetch(`${API_BASE}/api/employee/profile`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-API-Key": API_KEY,
+          "Authorization": `Bearer ${token}`,
+        },
+        body: JSON.stringify(formValues),
+      });
+
+      if (!res.ok) throw new Error("Failed to save profile");
+
+      const data = await res.json();
+      setEmployeeProfile(data);
+      setShowProfileForm(false);
+    } catch (err) {
+      console.error("Failed to save employee profile:", err);
+    }
+  };
+
+  const submitCheckin = async (checkinValues) => {
+    setCheckinSubmitting(true);
+    try {
+      const token = await getToken();
+      const res = await fetch(`${API_BASE}/api/employee/checkin`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-API-Key": API_KEY,
+          "Authorization": `Bearer ${token}`,
+        },
+        body: JSON.stringify(checkinValues),
+      });
+
+      if (!res.ok) throw new Error("Failed to submit check-in");
+
+      setShowCheckin(false);
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", text: "Check-in recorded. Thanks for keeping this up to date.", system: true },
+      ]);
+    } catch (err) {
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", text: "Couldn't submit that check-in. Please try again.", error: true },
+      ]);
+    } finally {
+      setCheckinSubmitting(false);
+    }
+  };
+
+  useEffect(() => {
+    if (audience === "employee") {
+      fetchEmployeeProfile();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [audience]);
 
   const sendMessage = async () => {
     const question = input.trim();
@@ -240,6 +330,38 @@ function App() {
             </div>
           </div>
 
+          {audience === "employee" && !profileLoading && employeeProfile && !showProfileForm && (
+            <div style={styles.employeeBar}>
+              <span style={styles.employeeBarText}>
+                {employeeProfile.job_role || "Workplace profile set"}
+              </span>
+              <div style={{ display: "flex", gap: "8px" }}>
+                <button onClick={() => setShowCheckin(true)} style={styles.employeeBarButton}>
+                  Check in
+                </button>
+                <button onClick={() => setShowProfileForm(true)} style={styles.employeeBarButtonGhost}>
+                  Edit profile
+                </button>
+              </div>
+            </div>
+          )}
+
+          {audience === "employee" && showProfileForm && (
+            <EmployeeProfileForm
+              initial={employeeProfile}
+              onSave={saveEmployeeProfile}
+              onCancel={() => employeeProfile && setShowProfileForm(false)}
+            />
+          )}
+
+          {audience === "employee" && showCheckin && (
+            <CheckinForm
+              onSubmit={submitCheckin}
+              onCancel={() => setShowCheckin(false)}
+              submitting={checkinSubmitting}
+            />
+          )}
+
           {uploadedFileName && (
             <div style={styles.fileChip}>
               <span>📄 {uploadedFileName}</span>
@@ -321,6 +443,140 @@ function App() {
     </div>
   );
 }
+
+const SCHEDULE_OPTIONS = ["standard", "shift", "remote", "hybrid"];
+
+const EmployeeProfileForm = ({ initial, onSave, onCancel }) => {
+  const [jobRole, setJobRole] = useState(initial?.job_role || "");
+  const [workSchedule, setWorkSchedule] = useState(initial?.work_schedule || "standard");
+  const [workload, setWorkload] = useState(initial?.stress_factors?.workload ?? 3);
+  const [hours, setHours] = useState(initial?.stress_factors?.hours ?? 3);
+  const [physicalStrain, setPhysicalStrain] = useState(initial?.stress_factors?.physical_strain ?? 3);
+  const [checkinInterval, setCheckinInterval] = useState(initial?.checkin_interval_days ?? 7);
+
+  const handleSubmit = () => {
+    onSave({
+      job_role: jobRole.trim() || null,
+      work_schedule: workSchedule,
+      stress_factors: { workload, hours, physical_strain: physicalStrain },
+      checkin_interval_days: Number(checkinInterval),
+    });
+  };
+
+  return (
+    <div style={styles.formPanel}>
+      <p style={styles.formTitle}>
+        {initial ? "Update your workplace profile" : "Set up your workplace profile"}
+      </p>
+      <p style={styles.formSubtitle}>
+        This helps tailor guidance to your work context — it's never used to diagnose.
+      </p>
+
+      <label style={styles.formLabel}>Job role</label>
+      <input
+        type="text"
+        value={jobRole}
+        onChange={(e) => setJobRole(e.target.value)}
+        placeholder="e.g. warehouse associate, software engineer"
+        style={styles.formInput}
+      />
+
+      <label style={styles.formLabel}>Work schedule</label>
+      <div style={styles.audienceButtons}>
+        {SCHEDULE_OPTIONS.map((opt) => (
+          <button
+            key={opt}
+            onClick={() => setWorkSchedule(opt)}
+            style={{
+              ...styles.audienceButton,
+              ...(workSchedule === opt ? styles.audienceButtonActive : {}),
+            }}
+          >
+            {opt.charAt(0).toUpperCase() + opt.slice(1)}
+          </button>
+        ))}
+      </div>
+
+      <SliderField label="Workload" value={workload} onChange={setWorkload} />
+      <SliderField label="Hours" value={hours} onChange={setHours} />
+      <SliderField label="Physical strain" value={physicalStrain} onChange={setPhysicalStrain} />
+
+      <label style={styles.formLabel}>Check in every (days)</label>
+      <input
+        type="number"
+        min={1}
+        max={90}
+        value={checkinInterval}
+        onChange={(e) => setCheckinInterval(e.target.value)}
+        style={styles.formInput}
+      />
+
+      <div style={styles.formActions}>
+        {initial && (
+          <button onClick={onCancel} style={styles.formCancelButton}>Cancel</button>
+        )}
+        <button onClick={handleSubmit} style={styles.sendButton}>Save</button>
+      </div>
+    </div>
+  );
+};
+
+const CheckinForm = ({ onSubmit, onCancel, submitting }) => {
+  const [energy, setEnergy] = useState(3);
+  const [stress, setStress] = useState(3);
+  const [sleep, setSleep] = useState(3);
+  const [newSymptoms, setNewSymptoms] = useState("");
+
+  const handleSubmit = () => {
+    onSubmit({
+      energy, stress, sleep,
+      new_symptoms: newSymptoms.trim() || null,
+    });
+  };
+
+  return (
+    <div style={styles.formPanel}>
+      <p style={styles.formTitle}>Quick check-in</p>
+
+      <SliderField label="Energy" value={energy} onChange={setEnergy} />
+      <SliderField label="Stress" value={stress} onChange={setStress} />
+      <SliderField label="Sleep quality" value={sleep} onChange={setSleep} />
+
+      <label style={styles.formLabel}>Anything new? (optional)</label>
+      <input
+        type="text"
+        value={newSymptoms}
+        onChange={(e) => setNewSymptoms(e.target.value)}
+        placeholder="e.g. lower back ache since Tuesday"
+        style={styles.formInput}
+      />
+
+      <div style={styles.formActions}>
+        <button onClick={onCancel} style={styles.formCancelButton}>Cancel</button>
+        <button onClick={handleSubmit} style={styles.sendButton} disabled={submitting}>
+          {submitting ? "Submitting..." : "Submit"}
+        </button>
+      </div>
+    </div>
+  );
+};
+
+const SliderField = ({ label, value, onChange }) => (
+  <div style={{ marginBottom: "10px" }}>
+    <div style={styles.sliderLabelRow}>
+      <label style={styles.formLabel}>{label}</label>
+      <span style={styles.sliderValue}>{value}</span>
+    </div>
+    <input
+      type="range"
+      min={1}
+      max={5}
+      value={value}
+      onChange={(e) => onChange(Number(e.target.value))}
+      style={{ width: "100%" }}
+    />
+  </div>
+);
 
 const styles = {
   page: {
@@ -505,6 +761,74 @@ const styles = {
   footerDot: {
     color: "#c7d0cd",
   },
+  employeeBar: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    background: "#eaf4f1",
+    border: "1px solid #cfe6df",
+    borderRadius: "10px",
+    padding: "9px 12px",
+    fontSize: "12px",
+    marginBottom: "1rem",
+    color: "#215048",
+  },
+  employeeBarText: { fontWeight: 500 },
+  employeeBarButton: {
+    fontSize: "11px",
+    padding: "6px 10px",
+    background: "#215048",
+    color: "#fff",
+    border: "none",
+    borderRadius: "8px",
+    cursor: "pointer",
+    fontWeight: 500,
+  },
+  employeeBarButtonGhost: {
+    fontSize: "11px",
+    padding: "6px 10px",
+    background: "transparent",
+    color: "#215048",
+    border: "1px solid #cfe6df",
+    borderRadius: "8px",
+    cursor: "pointer",
+  },
+  formPanel: {
+    background: "#f6f8f7",
+    border: "1px solid #e6e9e7",
+    borderRadius: "14px",
+    padding: "1rem",
+    marginBottom: "1rem",
+  },
+  formTitle: { fontSize: "14px", fontWeight: 600, color: "#1c2b28", margin: "0 0 4px" },
+  formSubtitle: { fontSize: "11.5px", color: "#7c8b87", margin: "0 0 12px" },
+  formLabel: { fontSize: "12px", color: "#4a5754", fontWeight: 500, display: "block", margin: "10px 0 6px" },
+  formInput: {
+    width: "100%",
+    padding: "9px 12px",
+    fontSize: "13px",
+    border: "1px solid #e0e4e2",
+    borderRadius: "10px",
+    outline: "none",
+    boxSizing: "border-box",
+  },
+  formActions: {
+    display: "flex",
+    justifyContent: "flex-end",
+    gap: "8px",
+    marginTop: "14px",
+  },
+  formCancelButton: {
+    padding: "10px 16px",
+    fontSize: "13px",
+    background: "transparent",
+    color: "#5a6d68",
+    border: "1px solid #e0e4e2",
+    borderRadius: "10px",
+    cursor: "pointer",
+  },
+  sliderLabelRow: { display: "flex", justifyContent: "space-between", alignItems: "center" },
+  sliderValue: { fontSize: "12px", color: "#215048", fontWeight: 600 },
 };
 
 const Footer = () => (
