@@ -47,11 +47,11 @@
     },
     "win": {
       "target": "nsis",
-      "icon": "public/favicon.svg"
+      "icon": "public/favicon.ico"
     },
     "mac": {
       "target": "dmg",
-      "icon": "public/favicon.svg",
+      "icon": "public/favicon.icns",
       "category": "public.app-category.healthcare-fitness"
     },
     "nsis": {
