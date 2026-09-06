@@ -35,6 +35,10 @@ function App() {
   const [showCheckin, setShowCheckin] = useState(false);
   const [checkinSubmitting, setCheckinSubmitting] = useState(false);
 
+  const [subscription, setSubscription] = useState(null); // { status, plan }
+  const [subscriptionLoading, setSubscriptionLoading] = useState(false);
+  const [checkoutLoading, setCheckoutLoading] = useState(null); // "monthly" | "annual" | null
+
   const bottomRef = useRef(null);
   const fileInputRef = useRef(null);
 
@@ -174,12 +178,67 @@ function App() {
     }
   };
 
+  const fetchSubscriptionStatus = async () => {
+    setSubscriptionLoading(true);
+    try {
+      const token = await getToken();
+      const res = await fetch(`${API_BASE}/api/billing/subscription-status`, {
+        headers: { "X-API-Key": API_KEY, "Authorization": `Bearer ${token}` },
+      });
+      if (res.ok) {
+        setSubscription(await res.json());
+      }
+    } catch (err) {
+      console.error("Failed to load subscription status:", err);
+    } finally {
+      setSubscriptionLoading(false);
+    }
+  };
+
+  const startCheckout = async (plan) => {
+    setCheckoutLoading(plan);
+    try {
+      const token = await getToken();
+      const res = await fetch(`${API_BASE}/api/billing/create-checkout-session`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-API-Key": API_KEY,
+          "Authorization": `Bearer ${token}`,
+        },
+        body: JSON.stringify({ plan }),
+      });
+
+      if (!res.ok) throw new Error("Failed to start checkout");
+
+      const data = await res.json();
+      window.location.href = data.checkout_url; // redirect to Stripe's hosted page
+    } catch (err) {
+      console.error("Checkout failed:", err);
+      setCheckoutLoading(null);
+    }
+  };
+
   useEffect(() => {
     if (audience === "employee") {
+      fetchSubscriptionStatus();
       fetchEmployeeProfile();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [audience]);
+
+  // After returning from Stripe Checkout, the URL carries ?checkout=success
+  // or ?checkout=canceled. Re-check status (webhook may take a moment to
+  // land) and clean the URL either way.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const checkoutResult = params.get("checkout");
+    if (checkoutResult) {
+      if (audience === "employee") fetchSubscriptionStatus();
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const sendMessage = async () => {
     const question = input.trim();
@@ -330,7 +389,16 @@ function App() {
             </div>
           </div>
 
-          {audience === "employee" && !profileLoading && employeeProfile && !showProfileForm && (
+          {audience === "employee" && subscriptionLoading && (
+            <p style={styles.emptyState}>Checking your subscription...</p>
+          )}
+
+          {audience === "employee" && !subscriptionLoading && subscription?.status !== "active" && (
+            <PricingPanel onSelectPlan={startCheckout} loadingPlan={checkoutLoading} />
+          )}
+
+          {audience === "employee" && !subscriptionLoading && subscription?.status === "active" &&
+            !profileLoading && employeeProfile && !showProfileForm && (
             <div style={styles.employeeBar}>
               <span style={styles.employeeBarText}>
                 {employeeProfile.job_role || "Workplace profile set"}
@@ -346,7 +414,7 @@ function App() {
             </div>
           )}
 
-          {audience === "employee" && showProfileForm && (
+          {audience === "employee" && subscription?.status === "active" && showProfileForm && (
             <EmployeeProfileForm
               initial={employeeProfile}
               onSave={saveEmployeeProfile}
@@ -354,7 +422,7 @@ function App() {
             />
           )}
 
-          {audience === "employee" && showCheckin && (
+          {audience === "employee" && subscription?.status === "active" && showCheckin && (
             <CheckinForm
               onSubmit={submitCheckin}
               onCancel={() => setShowCheckin(false)}
@@ -560,6 +628,46 @@ const CheckinForm = ({ onSubmit, onCancel, submitting }) => {
     </div>
   );
 };
+
+const PricingPanel = ({ onSelectPlan, loadingPlan }) => (
+  <div style={styles.pricingPanel}>
+    <p style={styles.formTitle}>Employee Tier</p>
+    <p style={styles.formSubtitle}>
+      Workplace-aware guidance, recurring check-ins, and a downloadable desktop app.
+    </p>
+
+    <div style={styles.pricingCards}>
+      <div style={styles.pricingCard}>
+        <p style={styles.pricingPlanName}>Monthly</p>
+        <p style={styles.pricingPrice}>Billed monthly</p>
+        <button
+          onClick={() => onSelectPlan("monthly")}
+          style={styles.sendButton}
+          disabled={loadingPlan !== null}
+        >
+          {loadingPlan === "monthly" ? "Redirecting..." : "Choose Monthly"}
+        </button>
+      </div>
+
+      <div style={{ ...styles.pricingCard, ...styles.pricingCardHighlighted }}>
+        <p style={styles.pricingBadge}>Best value</p>
+        <p style={styles.pricingPlanName}>Annual</p>
+        <p style={styles.pricingPrice}>Billed yearly</p>
+        <button
+          onClick={() => onSelectPlan("annual")}
+          style={styles.sendButton}
+          disabled={loadingPlan !== null}
+        >
+          {loadingPlan === "annual" ? "Redirecting..." : "Choose Annual"}
+        </button>
+      </div>
+    </div>
+
+    <p style={styles.pricingNote}>
+      You'll be redirected to Stripe's secure checkout. Cancel anytime.
+    </p>
+  </div>
+);
 
 const SliderField = ({ label, value, onChange }) => (
   <div style={{ marginBottom: "10px" }}>
@@ -829,6 +937,45 @@ const styles = {
   },
   sliderLabelRow: { display: "flex", justifyContent: "space-between", alignItems: "center" },
   sliderValue: { fontSize: "12px", color: "#215048", fontWeight: 600 },
+  pricingPanel: {
+    background: "#f6f8f7",
+    border: "1px solid #e6e9e7",
+    borderRadius: "14px",
+    padding: "1.25rem",
+    marginBottom: "1rem",
+  },
+  pricingCards: {
+    display: "flex",
+    gap: "10px",
+    marginTop: "14px",
+  },
+  pricingCard: {
+    flex: 1,
+    background: "#fff",
+    border: "1px solid #e0e4e2",
+    borderRadius: "12px",
+    padding: "14px",
+    textAlign: "center",
+    position: "relative",
+  },
+  pricingCardHighlighted: {
+    border: "1.5px solid #2f6f65",
+  },
+  pricingBadge: {
+    position: "absolute",
+    top: "-9px",
+    left: "50%",
+    transform: "translateX(-50%)",
+    background: "#215048",
+    color: "#fff",
+    fontSize: "10px",
+    fontWeight: 600,
+    padding: "3px 8px",
+    borderRadius: "6px",
+  },
+  pricingPlanName: { fontSize: "14px", fontWeight: 600, color: "#1c2b28", margin: "6px 0 2px" },
+  pricingPrice: { fontSize: "12px", color: "#7c8b87", margin: "0 0 12px" },
+  pricingNote: { fontSize: "11px", color: "#a8b3af", textAlign: "center", marginTop: "12px" },
 };
 
 const Footer = () => (
