@@ -38,6 +38,7 @@ function App() {
   const [subscription, setSubscription] = useState(null); // { status, plan }
   const [subscriptionLoading, setSubscriptionLoading] = useState(false);
   const [checkoutLoading, setCheckoutLoading] = useState(null); // "monthly" | "annual" | null
+  const [downloadLoading, setDownloadLoading] = useState(null); // "win" | "mac" | null
 
   const bottomRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -216,6 +217,29 @@ function App() {
     } catch (err) {
       console.error("Checkout failed:", err);
       setCheckoutLoading(null);
+    }
+  };
+
+  const fetchDownloadLink = async (platform) => {
+    setDownloadLoading(platform);
+    try {
+      const token = await getToken();
+      const res = await fetch(`${API_BASE}/api/employee/download?platform=${platform}`, {
+        headers: { "X-API-Key": API_KEY, "Authorization": `Bearer ${token}` },
+      });
+
+      if (!res.ok) throw new Error("Failed to get download link");
+
+      const data = await res.json();
+      window.location.href = data.download_url; // triggers the browser's file download
+    } catch (err) {
+      console.error("Failed to fetch download link:", err);
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", text: "Couldn't get the download link. Please try again.", error: true },
+      ]);
+    } finally {
+      setDownloadLoading(null);
     }
   };
 
@@ -409,6 +433,28 @@ function App() {
                 </button>
                 <button onClick={() => setShowProfileForm(true)} style={styles.employeeBarButtonGhost}>
                   Edit profile
+                </button>
+              </div>
+            </div>
+          )}
+
+          {audience === "employee" && subscription?.status === "active" && (
+            <div style={styles.downloadBox}>
+              <p style={styles.downloadLabel}>Get the desktop app</p>
+              <div style={{ display: "flex", gap: "8px" }}>
+                <button
+                  onClick={() => fetchDownloadLink("win")}
+                  style={styles.downloadButton}
+                  disabled={downloadLoading !== null}
+                >
+                  {downloadLoading === "win" ? "Preparing..." : "Download for Windows"}
+                </button>
+                <button
+                  onClick={() => fetchDownloadLink("mac")}
+                  style={styles.downloadButton}
+                  disabled={downloadLoading !== null}
+                >
+                  {downloadLoading === "mac" ? "Preparing..." : "Download for Mac"}
                 </button>
               </div>
             </div>
@@ -976,6 +1022,25 @@ const styles = {
   pricingPlanName: { fontSize: "14px", fontWeight: 600, color: "#1c2b28", margin: "6px 0 2px" },
   pricingPrice: { fontSize: "12px", color: "#7c8b87", margin: "0 0 12px" },
   pricingNote: { fontSize: "11px", color: "#a8b3af", textAlign: "center", marginTop: "12px" },
+  downloadBox: {
+    background: "#eaf4f1",
+    border: "1px solid #cfe6df",
+    borderRadius: "10px",
+    padding: "12px",
+    marginBottom: "1rem",
+  },
+  downloadLabel: { fontSize: "12px", fontWeight: 500, color: "#215048", margin: "0 0 8px" },
+  downloadButton: {
+    flex: 1,
+    fontSize: "12px",
+    padding: "9px",
+    background: "#fff",
+    border: "1px solid #cfe6df",
+    borderRadius: "8px",
+    cursor: "pointer",
+    color: "#215048",
+    fontWeight: 500,
+  },
 };
 
 const Footer = () => (
