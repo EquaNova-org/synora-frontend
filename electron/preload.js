@@ -1,6 +1,19 @@
-// Intentionally minimal. Synora's Electron shell is a thin client -- all
-// AI processing happens on Railway, and the React app doesn't need any
-// Node.js or OS-level APIs today (no local file access, no native
-// notifications yet). If recurring check-in reminders later need native
-// desktop notifications, that bridge gets added here via
-// contextBridge.exposeInMainWorld(...), not by enabling nodeIntegration.
+import { contextBridge, ipcRenderer } from 'electron';
+
+// If you already have a preload.js with other bridged APIs (auth, etc.),
+// merge this into it rather than replacing the file -- this only adds the
+// checkout-related bridge.
+contextBridge.exposeInMainWorld('electronAPI', {
+  // Opens a Stripe Checkout URL in the system browser instead of navigating
+  // this window to it.
+  openExternalCheckout: (url) => ipcRenderer.invoke('checkout:open-external', url),
+
+  // Registers a callback fired when the app is brought back via the
+  // synora://checkout?status=success|canceled deep link. Returns an
+  // unsubscribe function.
+  onCheckoutCallback: (callback) => {
+    const listener = (_event, status) => callback(status);
+    ipcRenderer.on('checkout-callback', listener);
+    return () => ipcRenderer.removeListener('checkout-callback', listener);
+  },
+});
