@@ -39,6 +39,7 @@ function App() {
   const [subscriptionLoading, setSubscriptionLoading] = useState(false);
   const [checkoutLoading, setCheckoutLoading] = useState(null); // "monthly" | "annual" | null
   const [downloadLoading, setDownloadLoading] = useState(null); // "win" | "mac" | null
+  const [pendingCheckout, setPendingCheckout] = useState(false); // true after a successful redirect, until status confirms active
 
   const bottomRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -196,6 +197,56 @@ function App() {
     }
   };
 
+  // After a successful checkout, the webhook may take a second or two to
+  // land on the backend. Poll subscription-status a few times with backoff
+  // instead of trusting a single check right after redirect.
+  const pollSubscriptionStatus = async (attempt = 0) => {
+    setSubscriptionLoading(true);
+    try {
+      const token = await getToken();
+      const res = await fetch(`${API_BASE}/api/billing/subscription-status`, {
+        headers: { "X-API-Key": API_KEY, "Authorization": `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setSubscription(data);
+        if (data.status === "active") {
+          setSubscriptionLoading(false);
+          setPendingCheckout(false);
+          return;
+        }
+        if (attempt >= 5) {
+          // Gave up automatically retrying -- leave pendingCheckout on so
+          // the manual "Refresh status" fallback stays visible.
+          setSubscriptionLoading(false);
+          return;
+        }
+      }
+    } catch (err) {
+      console.error("Failed to load subscription status:", err);
+    }
+    setTimeout(() => pollSubscriptionStatus(attempt + 1), 1500 * (attempt + 1));
+  };
+
+  const refreshSubscriptionStatus = async () => {
+    setSubscriptionLoading(true);
+    try {
+      const token = await getToken();
+      const res = await fetch(`${API_BASE}/api/billing/subscription-status`, {
+        headers: { "X-API-Key": API_KEY, "Authorization": `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setSubscription(data);
+        if (data.status === "active") setPendingCheckout(false);
+      }
+    } catch (err) {
+      console.error("Failed to load subscription status:", err);
+    } finally {
+      setSubscriptionLoading(false);
+    }
+  };
+
   const startCheckout = async (plan) => {
     setCheckoutLoading(plan);
     try {
@@ -258,8 +309,19 @@ function App() {
     const params = new URLSearchParams(window.location.search);
     const checkoutResult = params.get("checkout");
     if (checkoutResult) {
-      if (audience === "employee") fetchSubscriptionStatus();
+      // The page just reloaded after the Stripe redirect, so `audience` is
+      // back at its initial "individual" state no matter what it was before
+      // checkout -- this flow only ever originates from the employee tier,
+      // so force it back there and poll status until the webhook lands.
+      setAudience("employee");
       window.history.replaceState({}, "", window.location.pathname);
+
+      if (checkoutResult === "success") {
+        setPendingCheckout(true);
+        pollSubscriptionStatus();
+      } else {
+        fetchSubscriptionStatus();
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -418,7 +480,13 @@ function App() {
           )}
 
           {audience === "employee" && !subscriptionLoading && subscription?.status !== "active" && (
-            <PricingPanel onSelectPlan={startCheckout} loadingPlan={checkoutLoading} />
+            <PricingPanel
+              onSelectPlan={startCheckout}
+              loadingPlan={checkoutLoading}
+              showRefresh={pendingCheckout}
+              onRefresh={refreshSubscriptionStatus}
+              refreshing={subscriptionLoading}
+            />
           )}
 
           {audience === "employee" && !subscriptionLoading && subscription?.status === "active" &&
@@ -675,12 +743,27 @@ const CheckinForm = ({ onSubmit, onCancel, submitting }) => {
   );
 };
 
-const PricingPanel = ({ onSelectPlan, loadingPlan }) => (
+const PricingPanel = ({ onSelectPlan, loadingPlan, showRefresh, onRefresh, refreshing }) => (
   <div style={styles.pricingPanel}>
     <p style={styles.formTitle}>Employee Tier</p>
     <p style={styles.formSubtitle}>
       Workplace-aware guidance, recurring check-ins, and a downloadable desktop app.
     </p>
+
+    {showRefresh && (
+      <div style={styles.employeeBar}>
+        <span style={styles.employeeBarText}>
+          Payment received — waiting to confirm your subscription.
+        </span>
+        <button
+          onClick={onRefresh}
+          style={styles.employeeBarButton}
+          disabled={refreshing}
+        >
+          {refreshing ? "Checking..." : "Refresh status"}
+        </button>
+      </div>
+    )}
 
     <div style={styles.pricingCards}>
       <div style={styles.pricingCard}>
