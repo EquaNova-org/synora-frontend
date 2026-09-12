@@ -1,6 +1,6 @@
-import { app, BrowserWindow, shell, ipcMain } from 'electron';
+import { app, BrowserWindow, shell, ipcMain, protocol, net } from 'electron';
 import path from 'path';
-import { fileURLToPath } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -14,6 +14,21 @@ const isDev = !app.isPackaged;
 // This keeps the packaged app's own window from ever navigating away to
 // the hosted web tier when a payment completes.
 const PROTOCOL = 'synora';
+
+// Separate custom scheme for serving the built frontend itself. Vite emits
+// <script type="module">, and Chromium silently blocks ES module scripts
+// loaded over a raw file:// URL (CORS), which is why the packaged app was
+// showing a blank white window even after fixing vite.config.js's `base`.
+// Serving dist/ through a privileged scheme instead makes it behave like a
+// normal origin, so module scripts load correctly. Must be registered
+// before the app is ready.
+const APP_SCHEME = 'app';
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: APP_SCHEME,
+    privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true },
+  },
+]);
 
 let mainWindow = null;
 // Deep link that arrived before the window existed (cold start on Windows/Linux).
@@ -69,8 +84,9 @@ function createWindow() {
     mainWindow.loadURL(DEV_SERVER_URL);
     mainWindow.webContents.openDevTools({ mode: 'detach' });
   } else {
-    // dist/ sits one level up from electron/ after the Vite build
-    mainWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
+    // Serve the built app over app:// (registered above) instead of raw
+    // file:// so Vite's <script type="module"> bundles actually load.
+    mainWindow.loadURL(`${APP_SCHEME}://bundle/index.html`);
   }
 
   // Open any target="_blank" links (e.g. Terms/Privacy) in the OS browser
@@ -123,6 +139,16 @@ if (!gotLock) {
   });
 
   app.whenReady().then(() => {
+    // dist/ sits one level up from electron/ after the Vite build.
+    const distPath = path.join(__dirname, '..', 'dist');
+    protocol.handle(APP_SCHEME, (request) => {
+      const url = new URL(request.url);
+      let pathname = decodeURIComponent(url.pathname);
+      if (pathname === '' || pathname === '/') pathname = '/index.html';
+      const filePath = path.join(distPath, pathname);
+      return net.fetch(pathToFileURL(filePath).toString());
+    });
+
     // Cold start on Windows/Linux via the protocol (app wasn't running yet).
     pendingDeepLink = (() => {
       const link = extractDeepLink(process.argv);
