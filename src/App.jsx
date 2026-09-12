@@ -40,6 +40,8 @@ function App() {
   const [checkoutLoading, setCheckoutLoading] = useState(null); // "monthly" | "annual" | null
   const [downloadLoading, setDownloadLoading] = useState(null); // "win" | "mac" | null
   const [pendingCheckout, setPendingCheckout] = useState(false); // true after a successful redirect, until status confirms active
+  // Electron's preload.js exposes window.electronAPI; absent in the web build.
+  const isDesktop = typeof window !== "undefined" && !!window.electronAPI;
 
   const bottomRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -258,13 +260,20 @@ function App() {
           "X-API-Key": API_KEY,
           "Authorization": `Bearer ${token}`,
         },
-        body: JSON.stringify({ plan }),
+        body: JSON.stringify({ plan, client: isDesktop ? "desktop" : "web" }),
       });
 
       if (!res.ok) throw new Error("Failed to start checkout");
 
       const data = await res.json();
-      window.location.href = data.checkout_url; // redirect to Stripe's hosted page
+      if (isDesktop) {
+        // Open in the system browser -- never navigate the packaged app's
+        // own window, or it would be replaced by the web tier on redirect.
+        await window.electronAPI.openExternalCheckout(data.checkout_url);
+        setCheckoutLoading(null); // no in-app redirect to wait through; the deep-link listener below handles the return
+      } else {
+        window.location.href = data.checkout_url; // redirect to Stripe's hosted page
+      }
     } catch (err) {
       console.error("Checkout failed:", err);
       setCheckoutLoading(null);
@@ -301,6 +310,23 @@ function App() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [audience]);
+
+  // Desktop build: Stripe redirects the system browser to synora://checkout,
+  // which main.js intercepts and forwards here instead of a URL param.
+  useEffect(() => {
+    if (!isDesktop) return;
+    const unsubscribe = window.electronAPI.onCheckoutCallback((status) => {
+      setAudience("employee");
+      if (status === "success") {
+        setPendingCheckout(true);
+        pollSubscriptionStatus();
+      } else {
+        fetchSubscriptionStatus();
+      }
+    });
+    return unsubscribe;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isDesktop]);
 
   // After returning from Stripe Checkout, the URL carries ?checkout=success
   // or ?checkout=canceled. Re-check status (webhook may take a moment to
@@ -486,6 +512,7 @@ function App() {
               showRefresh={pendingCheckout}
               onRefresh={refreshSubscriptionStatus}
               refreshing={subscriptionLoading}
+              isDesktop={isDesktop}
             />
           )}
 
@@ -743,7 +770,7 @@ const CheckinForm = ({ onSubmit, onCancel, submitting }) => {
   );
 };
 
-const PricingPanel = ({ onSelectPlan, loadingPlan, showRefresh, onRefresh, refreshing }) => (
+const PricingPanel = ({ onSelectPlan, loadingPlan, showRefresh, onRefresh, refreshing, isDesktop }) => (
   <div style={styles.pricingPanel}>
     <p style={styles.formTitle}>Employee Tier</p>
     <p style={styles.formSubtitle}>
@@ -793,7 +820,9 @@ const PricingPanel = ({ onSelectPlan, loadingPlan, showRefresh, onRefresh, refre
     </div>
 
     <p style={styles.pricingNote}>
-      You'll be redirected to Stripe's secure checkout. Cancel anytime.
+      {isDesktop
+        ? "You'll be redirected to Stripe's secure checkout in your browser. Cancel anytime."
+        : "You'll be redirected to Stripe's secure checkout. Cancel anytime."}
     </p>
   </div>
 );
