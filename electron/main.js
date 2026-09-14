@@ -48,19 +48,42 @@ function extractDeepLink(argv) {
   return argv.find((arg) => arg.startsWith(`${PROTOCOL}://`)) || null;
 }
 
-function handleDeepLink(url) {
-  if (!url) return;
-  let status = null;
+// synora://checkout?status=success|canceled  -> Stripe Checkout return
+// synora://auth?ticket=<token>                -> Clerk sign-in handoff
+// (see api.py's create-checkout-session and desktop-handoff endpoints)
+function parseDeepLink(url) {
+  if (!url) return null;
   try {
-    status = new URL(url).searchParams.get('status');
+    const parsed = new URL(url);
+    if (parsed.host === 'checkout') {
+      return { kind: 'checkout', status: parsed.searchParams.get('status') };
+    }
+    if (parsed.host === 'auth') {
+      return { kind: 'auth', ticket: parsed.searchParams.get('ticket') };
+    }
   } catch {
-    return; // malformed, ignore
+    // malformed, ignore
   }
+  return null;
+}
+
+function deliverDeepLink(parsed) {
+  if (!mainWindow || !parsed) return;
+  if (parsed.kind === 'checkout') {
+    mainWindow.webContents.send('checkout-callback', parsed.status);
+  } else if (parsed.kind === 'auth') {
+    mainWindow.webContents.send('auth-callback', parsed.ticket);
+  }
+}
+
+function handleDeepLink(url) {
+  const parsed = parseDeepLink(url);
+  if (!parsed) return;
   if (!mainWindow) {
-    pendingDeepLink = status;
+    pendingDeepLink = parsed;
     return;
   }
-  mainWindow.webContents.send('checkout-callback', status);
+  deliverDeepLink(parsed);
   mainWindow.show();
   mainWindow.focus();
 }
@@ -87,6 +110,10 @@ function createWindow() {
     // Serve the built app over app:// (registered above) instead of raw
     // file:// so Vite's <script type="module"> bundles actually load.
     mainWindow.loadURL(`${APP_SCHEME}://bundle/index.html`);
+    // TEMPORARY -- remove this line once the blank-screen issue is confirmed
+    // fixed. Opens the Chromium inspector so we can see real console errors
+    // in the packaged app, which are otherwise completely invisible.
+    mainWindow.webContents.openDevTools({ mode: 'detach' });
   }
 
   // Open any target="_blank" links (e.g. Terms/Privacy) in the OS browser
@@ -98,7 +125,7 @@ function createWindow() {
 
   mainWindow.webContents.once('did-finish-load', () => {
     if (pendingDeepLink) {
-      mainWindow.webContents.send('checkout-callback', pendingDeepLink);
+      deliverDeepLink(pendingDeepLink);
       pendingDeepLink = null;
     }
   });
@@ -108,11 +135,11 @@ function createWindow() {
   });
 }
 
-// Stripe Checkout must open in the system browser, never navigate the
-// packaged app's own window (that would replace it with the web tier at
-// FRONTEND_URL). The renderer calls this via the preload bridge instead of
-// setting window.location.href directly.
-ipcMain.handle('checkout:open-external', (_event, url) => {
+// Stripe Checkout and the Clerk sign-in handoff page must both open in the
+// system browser, never navigate the packaged app's own window (that would
+// replace it with the web tier). The renderer calls this via the preload
+// bridge instead of setting window.location.href directly.
+ipcMain.handle('app:open-external', (_event, url) => {
   if (typeof url === 'string' && url.startsWith('https://')) {
     shell.openExternal(url);
   }
@@ -150,15 +177,7 @@ if (!gotLock) {
     });
 
     // Cold start on Windows/Linux via the protocol (app wasn't running yet).
-    pendingDeepLink = (() => {
-      const link = extractDeepLink(process.argv);
-      if (!link) return null;
-      try {
-        return new URL(link).searchParams.get('status');
-      } catch {
-        return null;
-      }
-    })();
+    pendingDeepLink = parseDeepLink(extractDeepLink(process.argv));
     createWindow();
   });
 
