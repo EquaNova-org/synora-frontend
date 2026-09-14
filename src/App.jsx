@@ -1,8 +1,12 @@
 import { useState, useRef, useEffect } from "react";
-import { SignedIn, SignedOut, SignInButton, UserButton, useAuth } from "@clerk/clerk-react";
+import { SignedIn, SignedOut, SignInButton, UserButton, useAuth, useSignIn } from "@clerk/clerk-react";
 
 const API_BASE = "https://web-production-85687.up.railway.app";
 const API_KEY = import.meta.env.VITE_APP_API_KEY;
+// Where the desktop app sends the system browser to sign in (see
+// DesktopAuthHandoff.jsx) -- must match one of api.py's verify_clerk_user
+// authorized_parties entries.
+const WEB_FRONTEND_URL = "https://synora-frontend-swart.vercel.app";
 
 const STEP_LABELS = {
   classify_intent: "Understanding your question",
@@ -19,6 +23,7 @@ const STEP_LABELS = {
 
 function App() {
   const { getToken } = useAuth();
+  const { signIn, setActive } = useSignIn();
 
   const [audience, setAudience] = useState("individual");
   const [messages, setMessages] = useState([]);
@@ -269,7 +274,7 @@ function App() {
       if (isDesktop) {
         // Open in the system browser -- never navigate the packaged app's
         // own window, or it would be replaced by the web tier on redirect.
-        await window.electronAPI.openExternalCheckout(data.checkout_url);
+        await window.electronAPI.openExternal(data.checkout_url);
         setCheckoutLoading(null); // no in-app redirect to wait through; the deep-link listener below handles the return
       } else {
         window.location.href = data.checkout_url; // redirect to Stripe's hosted page
@@ -327,6 +332,33 @@ function App() {
     return unsubscribe;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isDesktop]);
+
+  // Desktop build: sign-in happens in the system browser (Clerk's own
+  // cookie-based flow doesn't work inside the app:// origin -- see
+  // DesktopAuthHandoff.jsx on the web frontend for why). The browser hands
+  // back a one-time ticket via synora://auth, redeemed here.
+  useEffect(() => {
+    if (!isDesktop || !signIn) return;
+    const unsubscribe = window.electronAPI.onAuthCallback(async (ticket) => {
+      if (!ticket) return;
+      try {
+        const attempt = await signIn.create({ strategy: "ticket", ticket });
+        if (attempt.status === "complete") {
+          await setActive({ session: attempt.createdSessionId });
+        } else {
+          console.error("Desktop sign-in ticket did not complete:", attempt.status);
+        }
+      } catch (err) {
+        console.error("Failed to redeem desktop sign-in ticket:", err);
+      }
+    });
+    return unsubscribe;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isDesktop, signIn]);
+
+  const handleDesktopSignIn = () => {
+    window.electronAPI.openExternal(`${WEB_FRONTEND_URL}/desktop-auth`);
+  };
 
   // After returning from Stripe Checkout, the URL carries ?checkout=success
   // or ?checkout=canceled. Re-check status (webhook may take a moment to
@@ -454,9 +486,15 @@ function App() {
           <p style={{ textAlign: "center", fontSize: "13px", color: "#7c8b87", marginBottom: "1rem" }}>
             Please sign in to continue.
           </p>
-          <SignInButton mode="modal">
-            <button style={styles.sendButton}>Sign In</button>
-          </SignInButton>
+          {isDesktop ? (
+            <button style={styles.sendButton} onClick={handleDesktopSignIn}>
+              Sign In
+            </button>
+          ) : (
+            <SignInButton mode="modal">
+              <button style={styles.sendButton}>Sign In</button>
+            </SignInButton>
+          )}
           <p style={styles.legalConsent}>
             By signing in, you agree to our{" "}
             <a href="/terms-of-service.html" target="_blank" rel="noopener noreferrer" style={styles.legalLink}>
