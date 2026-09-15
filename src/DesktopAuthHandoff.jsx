@@ -8,8 +8,12 @@ const API_KEY = import.meta.env.VITE_APP_API_KEY;
 // App.jsx's handleDesktopSignIn) once the user clicks "Sign In" there.
 // Runs on the real https origin, so Clerk's normal cookie-based sign-in
 // works exactly like it does for the individual/web tier -- no app://
-// origin problems here. Once signed in, mints a one-time ticket via the
-// backend and redirects back into the desktop app with it.
+// origin problems here. Once signed in, mints the desktop app's own signed
+// token via the backend (see desktop_auth.py) and hands it back to the
+// desktop app through the synora://auth deep link. The desktop app uses
+// this token directly for all its own API calls afterward -- it does not
+// try to establish a Clerk session inside its own app:// origin, which is
+// what caused the sign-in bounce-back loop there.
 export default function DesktopAuthHandoff() {
   const { getToken } = useAuth();
   const [status, setStatus] = useState("working"); // "working" | "done" | "error"
@@ -24,11 +28,11 @@ export default function DesktopAuthHandoff() {
           method: "POST",
           headers: { "X-API-Key": API_KEY, Authorization: `Bearer ${token}` },
         });
-        if (!res.ok) throw new Error("Failed to create desktop sign-in ticket");
+        if (!res.ok) throw new Error("Failed to create desktop sign-in token");
         const data = await res.json();
         if (cancelled) return;
         setStatus("done");
-        window.location.href = `synora://auth?ticket=${encodeURIComponent(data.ticket)}`;
+        window.location.href = `synora://auth?token=${encodeURIComponent(data.token)}`;
       } catch (err) {
         console.error("Desktop handoff failed:", err);
         if (!cancelled) setStatus("error");
