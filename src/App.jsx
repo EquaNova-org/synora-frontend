@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { SignedIn, SignedOut, SignInButton, UserButton, useAuth, useSignIn } from "@clerk/clerk-react";
+import { SignInButton, UserButton, useAuth } from "@clerk/clerk-react";
 
 const API_BASE = "https://web-production-85687.up.railway.app";
 const API_KEY = import.meta.env.VITE_APP_API_KEY;
@@ -22,8 +22,7 @@ const STEP_LABELS = {
 };
 
 function App() {
-  const { getToken } = useAuth();
-  const { signIn, setActive } = useSignIn();
+  const { getToken, isSignedIn: isSignedInClerk } = useAuth();
 
   const [audience, setAudience] = useState("individual");
   const [messages, setMessages] = useState([]);
@@ -47,6 +46,32 @@ function App() {
   const [pendingCheckout, setPendingCheckout] = useState(false); // true after a successful redirect, until status confirms active
   // Electron's preload.js exposes window.electronAPI; absent in the web build.
   const isDesktop = typeof window !== "undefined" && !!window.electronAPI;
+
+  // Desktop's own backend-issued token (see desktop_auth.py) -- NOT a Clerk
+  // session. Clerk's own session/cookie persistence doesn't survive inside
+  // the app:// origin, so the desktop app authenticates with the backend
+  // using this instead, loaded from secure OS-keychain storage on launch.
+  const [desktopToken, setDesktopToken] = useState(null);
+  const [desktopTokenLoaded, setDesktopTokenLoaded] = useState(!isDesktop); // web has nothing to load
+
+  // Unified signed-in flag: Clerk's own state for web, our token for desktop.
+  const signedIn = isDesktop ? !!desktopToken : isSignedInClerk;
+
+  // A single place that decides which kind of token to send with API calls,
+  // so every existing getToken() call site below just becomes getAuthToken().
+  const getAuthToken = async () => {
+    if (isDesktop) return desktopToken;
+    return getToken();
+  };
+
+  useEffect(() => {
+    if (!isDesktop) return;
+    window.electronAPI.getStoredAuthToken().then((token) => {
+      setDesktopToken(token || null);
+      setDesktopTokenLoaded(true);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isDesktop]);
 
   const bottomRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -74,7 +99,7 @@ function App() {
     if (sessionId) formData.append("session_id", sessionId);
 
     try {
-      const token = await getToken();
+      const token = await getAuthToken();
 
       const res = await fetch(`${API_BASE}/api/upload`, {
         method: "POST",
@@ -113,7 +138,7 @@ function App() {
   const fetchEmployeeProfile = async () => {
     setProfileLoading(true);
     try {
-      const token = await getToken();
+      const token = await getAuthToken();
       const res = await fetch(`${API_BASE}/api/employee/profile`, {
         headers: { "X-API-Key": API_KEY, "Authorization": `Bearer ${token}` },
       });
@@ -135,7 +160,7 @@ function App() {
 
   const saveEmployeeProfile = async (formValues) => {
     try {
-      const token = await getToken();
+      const token = await getAuthToken();
       const res = await fetch(`${API_BASE}/api/employee/profile`, {
         method: "POST",
         headers: {
@@ -159,7 +184,7 @@ function App() {
   const submitCheckin = async (checkinValues) => {
     setCheckinSubmitting(true);
     try {
-      const token = await getToken();
+      const token = await getAuthToken();
       const res = await fetch(`${API_BASE}/api/employee/checkin`, {
         method: "POST",
         headers: {
@@ -190,7 +215,7 @@ function App() {
   const fetchSubscriptionStatus = async () => {
     setSubscriptionLoading(true);
     try {
-      const token = await getToken();
+      const token = await getAuthToken();
       const res = await fetch(`${API_BASE}/api/billing/subscription-status`, {
         headers: { "X-API-Key": API_KEY, "Authorization": `Bearer ${token}` },
       });
@@ -210,7 +235,7 @@ function App() {
   const pollSubscriptionStatus = async (attempt = 0) => {
     setSubscriptionLoading(true);
     try {
-      const token = await getToken();
+      const token = await getAuthToken();
       const res = await fetch(`${API_BASE}/api/billing/subscription-status`, {
         headers: { "X-API-Key": API_KEY, "Authorization": `Bearer ${token}` },
       });
@@ -238,7 +263,7 @@ function App() {
   const refreshSubscriptionStatus = async () => {
     setSubscriptionLoading(true);
     try {
-      const token = await getToken();
+      const token = await getAuthToken();
       const res = await fetch(`${API_BASE}/api/billing/subscription-status`, {
         headers: { "X-API-Key": API_KEY, "Authorization": `Bearer ${token}` },
       });
@@ -257,7 +282,7 @@ function App() {
   const startCheckout = async (plan) => {
     setCheckoutLoading(plan);
     try {
-      const token = await getToken();
+      const token = await getAuthToken();
       const res = await fetch(`${API_BASE}/api/billing/create-checkout-session`, {
         method: "POST",
         headers: {
@@ -288,7 +313,7 @@ function App() {
   const fetchDownloadLink = async (platform) => {
     setDownloadLoading(platform);
     try {
-      const token = await getToken();
+      const token = await getAuthToken();
       const res = await fetch(`${API_BASE}/api/employee/download?platform=${platform}`, {
         headers: { "X-API-Key": API_KEY, "Authorization": `Bearer ${token}` },
       });
@@ -336,28 +361,28 @@ function App() {
   // Desktop build: sign-in happens in the system browser (Clerk's own
   // cookie-based flow doesn't work inside the app:// origin -- see
   // DesktopAuthHandoff.jsx on the web frontend for why). The browser hands
-  // back a one-time ticket via synora://auth, redeemed here.
+  // back our own backend-issued token via synora://auth -- not a Clerk
+  // session -- which we just store and use directly.
   useEffect(() => {
-    if (!isDesktop || !signIn) return;
-    const unsubscribe = window.electronAPI.onAuthCallback(async (ticket) => {
-      if (!ticket) return;
-      try {
-        const attempt = await signIn.create({ strategy: "ticket", ticket });
-        if (attempt.status === "complete") {
-          await setActive({ session: attempt.createdSessionId });
-        } else {
-          console.error("Desktop sign-in ticket did not complete:", attempt.status);
-        }
-      } catch (err) {
-        console.error("Failed to redeem desktop sign-in ticket:", err);
-      }
+    if (!isDesktop) return;
+    const unsubscribe = window.electronAPI.onAuthCallback(async (token) => {
+      if (!token) return;
+      await window.electronAPI.setStoredAuthToken(token);
+      setDesktopToken(token);
     });
     return unsubscribe;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isDesktop, signIn]);
+  }, [isDesktop]);
 
   const handleDesktopSignIn = () => {
     window.electronAPI.openExternal(`${WEB_FRONTEND_URL}/desktop-auth`);
+  };
+
+  const handleDesktopSignOut = async () => {
+    await window.electronAPI.clearStoredAuthToken();
+    setDesktopToken(null);
+    setSubscription(null);
+    setEmployeeProfile(null);
   };
 
   // After returning from Stripe Checkout, the URL carries ?checkout=success
@@ -394,7 +419,7 @@ function App() {
     setCurrentStep(null);
 
     try {
-      const token = await getToken();
+      const token = await getAuthToken();
 
       const res = await fetch(`${API_BASE}/api/chat/stream`, {
         method: "POST",
@@ -476,7 +501,7 @@ function App() {
     <div style={styles.page}>
       <GlobalStyle />
 
-      <SignedOut>
+      {desktopTokenLoaded && !signedIn && (
         <div style={styles.container}>
           <div style={styles.header}>
             <div style={styles.logo}>S</div>
@@ -507,12 +532,18 @@ function App() {
           </p>
           <Footer />
         </div>
-      </SignedOut>
+      )}
 
-      <SignedIn>
+      {desktopTokenLoaded && signedIn && (
         <div style={{ ...styles.container, position: "relative" }}>
           <div style={{ position: "absolute", top: "1rem", right: "1rem" }}>
-            <UserButton />
+            {isDesktop ? (
+              <button style={styles.signOutButton} onClick={handleDesktopSignOut}>
+                Sign Out
+              </button>
+            ) : (
+              <UserButton />
+            )}
           </div>
 
           <div style={styles.header}>
@@ -686,7 +717,7 @@ function App() {
           <p style={styles.disclaimer}>Not a substitute for professional medical advice.</p>
           <Footer />
         </div>
-      </SignedIn>
+      )}
     </div>
   );
 }
@@ -1034,6 +1065,16 @@ const styles = {
     color: "#fff",
     border: "none",
     borderRadius: "10px",
+    cursor: "pointer",
+    fontWeight: 500,
+  },
+  signOutButton: {
+    padding: "6px 12px",
+    fontSize: "12px",
+    background: "transparent",
+    color: "#5c6f69",
+    border: "1px solid #d8ded9",
+    borderRadius: "8px",
     cursor: "pointer",
     fontWeight: 500,
   },
