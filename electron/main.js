@@ -1,5 +1,6 @@
-import { app, BrowserWindow, shell, ipcMain, protocol, net } from 'electron';
+import { app, BrowserWindow, shell, ipcMain, protocol, net, safeStorage } from 'electron';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath, pathToFileURL } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -49,7 +50,7 @@ function extractDeepLink(argv) {
 }
 
 // synora://checkout?status=success|canceled  -> Stripe Checkout return
-// synora://auth?ticket=<token>                -> Clerk sign-in handoff
+// synora://auth?token=<desktop-token>          -> post-sign-in handoff
 // (see api.py's create-checkout-session and desktop-handoff endpoints)
 function parseDeepLink(url) {
   if (!url) return null;
@@ -59,7 +60,7 @@ function parseDeepLink(url) {
       return { kind: 'checkout', status: parsed.searchParams.get('status') };
     }
     if (parsed.host === 'auth') {
-      return { kind: 'auth', ticket: parsed.searchParams.get('ticket') };
+      return { kind: 'auth', token: parsed.searchParams.get('token') };
     }
   } catch {
     // malformed, ignore
@@ -72,7 +73,7 @@ function deliverDeepLink(parsed) {
   if (parsed.kind === 'checkout') {
     mainWindow.webContents.send('checkout-callback', parsed.status);
   } else if (parsed.kind === 'auth') {
-    mainWindow.webContents.send('auth-callback', parsed.ticket);
+    mainWindow.webContents.send('auth-callback', parsed.token);
   }
 }
 
@@ -142,6 +143,38 @@ function createWindow() {
 ipcMain.handle('app:open-external', (_event, url) => {
   if (typeof url === 'string' && url.startsWith('https://')) {
     shell.openExternal(url);
+  }
+});
+
+// Secure storage for the desktop app's own auth token (see desktop_auth.py
+// on the backend and App.jsx's getAuthToken). Encrypted at rest via the
+// OS keychain (safeStorage) rather than plain localStorage, since this is
+// a health app's auth credential -- not just a UI preference.
+function tokenFilePath() {
+  return path.join(app.getPath('userData'), 'desktop_token.enc');
+}
+
+ipcMain.handle('auth:get-token', () => {
+  try {
+    if (!safeStorage.isEncryptionAvailable()) return null;
+    const encrypted = fs.readFileSync(tokenFilePath());
+    return safeStorage.decryptString(encrypted);
+  } catch {
+    return null; // no token stored yet, or the file is unreadable/corrupt
+  }
+});
+
+ipcMain.handle('auth:set-token', (_event, token) => {
+  if (typeof token !== 'string' || !safeStorage.isEncryptionAvailable()) return false;
+  fs.writeFileSync(tokenFilePath(), safeStorage.encryptString(token));
+  return true;
+});
+
+ipcMain.handle('auth:clear-token', () => {
+  try {
+    fs.unlinkSync(tokenFilePath());
+  } catch {
+    // already gone -- fine
   }
 });
 
