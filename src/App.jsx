@@ -21,6 +21,21 @@ const STEP_LABELS = {
   fallback: "Reviewing available evidence",
 };
 
+// Audiences that require their own paid subscription. Individual is free.
+// The server enforces this (402); the frontend only mirrors it for UX.
+const PAID_TIERS = ["employee", "doctor"];
+
+const TIER_COPY = {
+  employee: {
+    title: "Employee Tier",
+    blurb: "Workplace-aware guidance, recurring check-ins, and a downloadable desktop app.",
+  },
+  doctor: {
+    title: "Doctor Tier",
+    blurb: "Research-grade answers grounded in a curated library of peer-reviewed medical literature.",
+  },
+};
+
 function App() {
   const { getToken, isSignedIn: isSignedInClerk } = useAuth();
 
@@ -39,7 +54,16 @@ function App() {
   const [showCheckin, setShowCheckin] = useState(false);
   const [checkinSubmitting, setCheckinSubmitting] = useState(false);
 
-  const [subscription, setSubscription] = useState(null); // { status, plan }
+  // Subscription status per paid tier: { employee: {status, plan}, doctor: {...} }.
+  // `subscription` is the one belonging to the audience currently selected.
+  const [subscriptions, setSubscriptions] = useState({});
+  const subscription = subscriptions[audience] || null;
+  const isPaidAudience = PAID_TIERS.includes(audience);
+  const hasAccess = !isPaidAudience || subscription?.status === "active";
+  const employeeActive = subscriptions.employee?.status === "active";
+  // Desktop's checkout return (synora://checkout) carries only a status, not
+  // the tier, so remember which tier the user was buying.
+  const checkoutTierRef = useRef("employee");
   const [subscriptionLoading, setSubscriptionLoading] = useState(false);
   const [checkoutLoading, setCheckoutLoading] = useState(null); // "monthly" | "annual" | null
   const [downloadLoading, setDownloadLoading] = useState(null); // "win" | "mac" | null
@@ -59,8 +83,14 @@ function App() {
 
   // A single place that decides which kind of token to send with API calls,
   // so every existing getToken() call site below just becomes getAuthToken().
+  // The deep-link callbacks below (checkout return) are registered once and
+  // keep the first render's closure, where desktopToken was still null. Going
+  // through a ref means they always send the current token.
+  const desktopTokenRef = useRef(null);
+  desktopTokenRef.current = desktopToken;
+
   const getAuthToken = async () => {
-    if (isDesktop) return desktopToken;
+    if (isDesktop) return desktopTokenRef.current;
     return getToken();
   };
 
@@ -212,15 +242,16 @@ function App() {
     }
   };
 
-  const fetchSubscriptionStatus = async () => {
+  const fetchSubscriptionStatus = async (tier) => {
     setSubscriptionLoading(true);
     try {
       const token = await getAuthToken();
-      const res = await fetch(`${API_BASE}/api/billing/subscription-status`, {
+      const res = await fetch(`${API_BASE}/api/billing/subscription-status?tier=${tier}`, {
         headers: { "X-API-Key": API_KEY, "Authorization": `Bearer ${token}` },
       });
       if (res.ok) {
-        setSubscription(await res.json());
+        const data = await res.json();
+        setSubscriptions((prev) => ({ ...prev, [tier]: data }));
       }
     } catch (err) {
       console.error("Failed to load subscription status:", err);
@@ -232,44 +263,46 @@ function App() {
   // After a successful checkout, the webhook may take a second or two to
   // land on the backend. Poll subscription-status a few times with backoff
   // instead of trusting a single check right after redirect.
-  const pollSubscriptionStatus = async (attempt = 0) => {
+  const pollSubscriptionStatus = async (tier, attempt = 0) => {
     setSubscriptionLoading(true);
     try {
       const token = await getAuthToken();
-      const res = await fetch(`${API_BASE}/api/billing/subscription-status`, {
+      const res = await fetch(`${API_BASE}/api/billing/subscription-status?tier=${tier}`, {
         headers: { "X-API-Key": API_KEY, "Authorization": `Bearer ${token}` },
       });
       if (res.ok) {
         const data = await res.json();
-        setSubscription(data);
+        setSubscriptions((prev) => ({ ...prev, [tier]: data }));
         if (data.status === "active") {
           setSubscriptionLoading(false);
           setPendingCheckout(false);
-          return;
-        }
-        if (attempt >= 5) {
-          // Gave up automatically retrying -- leave pendingCheckout on so
-          // the manual "Refresh status" fallback stays visible.
-          setSubscriptionLoading(false);
           return;
         }
       }
     } catch (err) {
       console.error("Failed to load subscription status:", err);
     }
-    setTimeout(() => pollSubscriptionStatus(attempt + 1), 1500 * (attempt + 1));
+    if (attempt >= 5) {
+      // Gave up automatically retrying -- leave pendingCheckout on so
+      // the manual "Refresh status" fallback stays visible. (The cap now
+      // also applies when a request fails, not only when it succeeds but
+      // isn't active yet, so a failing request can't poll forever.)
+      setSubscriptionLoading(false);
+      return;
+    }
+    setTimeout(() => pollSubscriptionStatus(tier, attempt + 1), 1500 * (attempt + 1));
   };
 
-  const refreshSubscriptionStatus = async () => {
+  const refreshSubscriptionStatus = async (tier) => {
     setSubscriptionLoading(true);
     try {
       const token = await getAuthToken();
-      const res = await fetch(`${API_BASE}/api/billing/subscription-status`, {
+      const res = await fetch(`${API_BASE}/api/billing/subscription-status?tier=${tier}`, {
         headers: { "X-API-Key": API_KEY, "Authorization": `Bearer ${token}` },
       });
       if (res.ok) {
         const data = await res.json();
-        setSubscription(data);
+        setSubscriptions((prev) => ({ ...prev, [tier]: data }));
         if (data.status === "active") setPendingCheckout(false);
       }
     } catch (err) {
@@ -279,8 +312,9 @@ function App() {
     }
   };
 
-  const startCheckout = async (plan) => {
+  const startCheckout = async (plan, tier) => {
     setCheckoutLoading(plan);
+    checkoutTierRef.current = tier;
     try {
       const token = await getAuthToken();
       const res = await fetch(`${API_BASE}/api/billing/create-checkout-session`, {
@@ -290,8 +324,15 @@ function App() {
           "X-API-Key": API_KEY,
           "Authorization": `Bearer ${token}`,
         },
-        body: JSON.stringify({ plan, client: isDesktop ? "desktop" : "web" }),
+        body: JSON.stringify({ plan, tier, client: isDesktop ? "desktop" : "web" }),
       });
+
+      if (res.status === 409) {
+        // Already subscribed to this tier -- just refresh so the UI unlocks.
+        await fetchSubscriptionStatus(tier);
+        setCheckoutLoading(null);
+        return;
+      }
 
       if (!res.ok) throw new Error("Failed to start checkout");
 
@@ -333,25 +374,35 @@ function App() {
     }
   };
 
+  // Switching to a paid audience checks that tier's subscription.
   useEffect(() => {
-    if (audience === "employee") {
-      fetchSubscriptionStatus();
-      fetchEmployeeProfile();
+    if (PAID_TIERS.includes(audience)) {
+      fetchSubscriptionStatus(audience);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [audience]);
+
+  // The employee profile endpoints are subscription-gated server-side now, so
+  // only load the profile once the employee subscription is known to be active.
+  useEffect(() => {
+    if (audience === "employee" && employeeActive) {
+      fetchEmployeeProfile();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [audience, employeeActive]);
 
   // Desktop build: Stripe redirects the system browser to synora://checkout,
   // which main.js intercepts and forwards here instead of a URL param.
   useEffect(() => {
     if (!isDesktop) return;
     const unsubscribe = window.electronAPI.onCheckoutCallback((status) => {
-      setAudience("employee");
+      const tier = checkoutTierRef.current;
+      setAudience(tier);
       if (status === "success") {
         setPendingCheckout(true);
-        pollSubscriptionStatus();
+        pollSubscriptionStatus(tier);
       } else {
-        fetchSubscriptionStatus();
+        fetchSubscriptionStatus(tier);
       }
     });
     return unsubscribe;
@@ -381,7 +432,7 @@ function App() {
   const handleDesktopSignOut = async () => {
     await window.electronAPI.clearStoredAuthToken();
     setDesktopToken(null);
-    setSubscription(null);
+    setSubscriptions({});
     setEmployeeProfile(null);
   };
 
@@ -394,16 +445,20 @@ function App() {
     if (checkoutResult) {
       // The page just reloaded after the Stripe redirect, so `audience` is
       // back at its initial "individual" state no matter what it was before
-      // checkout -- this flow only ever originates from the employee tier,
-      // so force it back there and poll status until the webhook lands.
-      setAudience("employee");
+      // checkout. The backend puts the tier in the return URL (&tier=...), so
+      // send the user back to the audience they were buying and poll status
+      // until the webhook lands. Missing/unknown tier -> employee, which is
+      // what every checkout was before doctor tier existed.
+      const tierParam = params.get("tier");
+      const tier = PAID_TIERS.includes(tierParam) ? tierParam : "employee";
+      setAudience(tier);
       window.history.replaceState({}, "", window.location.pathname);
 
       if (checkoutResult === "success") {
         setPendingCheckout(true);
-        pollSubscriptionStatus();
+        pollSubscriptionStatus(tier);
       } else {
-        fetchSubscriptionStatus();
+        fetchSubscriptionStatus(tier);
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -411,7 +466,7 @@ function App() {
 
   const sendMessage = async () => {
     const question = input.trim();
-    if (!question || loading) return;
+    if (!question || loading || !hasAccess) return;
 
     setMessages((prev) => [...prev, { role: "user", text: question }]);
     setInput("");
@@ -430,6 +485,17 @@ function App() {
         },
         body: JSON.stringify({ question, audience, session_id: sessionId }),
       });
+
+      if (res.status === 402) {
+        // The server says this audience needs a subscription we don't have
+        // (e.g. it lapsed mid-session). Re-check so the pricing panel appears.
+        await fetchSubscriptionStatus(audience);
+        setMessages((prev) => [
+          ...prev,
+          { role: "assistant", text: "This audience needs an active subscription. Choose a plan above to continue.", error: true },
+        ]);
+        return;
+      }
 
       if (!res.ok || !res.body) throw new Error("Request failed");
 
@@ -570,16 +636,17 @@ function App() {
             </div>
           </div>
 
-          {audience === "employee" && subscriptionLoading && (
+          {isPaidAudience && subscriptionLoading && (
             <p style={styles.emptyState}>Checking your subscription...</p>
           )}
 
-          {audience === "employee" && !subscriptionLoading && subscription?.status !== "active" && (
+          {isPaidAudience && !subscriptionLoading && subscription?.status !== "active" && (
             <PricingPanel
-              onSelectPlan={startCheckout}
+              tier={audience}
+              onSelectPlan={(plan) => startCheckout(plan, audience)}
               loadingPlan={checkoutLoading}
               showRefresh={pendingCheckout}
-              onRefresh={refreshSubscriptionStatus}
+              onRefresh={() => refreshSubscriptionStatus(audience)}
               refreshing={subscriptionLoading}
               isDesktop={isDesktop}
             />
@@ -706,10 +773,11 @@ function App() {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="Ask a health question"
+              placeholder={hasAccess ? "Ask a health question" : "Subscribe to use this audience"}
               style={styles.input}
+              disabled={!hasAccess}
             />
-            <button onClick={sendMessage} style={styles.sendButton} disabled={loading}>
+            <button onClick={sendMessage} style={styles.sendButton} disabled={loading || !hasAccess}>
               Send
             </button>
           </div>
@@ -839,12 +907,10 @@ const CheckinForm = ({ onSubmit, onCancel, submitting }) => {
   );
 };
 
-const PricingPanel = ({ onSelectPlan, loadingPlan, showRefresh, onRefresh, refreshing, isDesktop }) => (
+const PricingPanel = ({ tier, onSelectPlan, loadingPlan, showRefresh, onRefresh, refreshing, isDesktop }) => (
   <div style={styles.pricingPanel}>
-    <p style={styles.formTitle}>Employee Tier</p>
-    <p style={styles.formSubtitle}>
-      Workplace-aware guidance, recurring check-ins, and a downloadable desktop app.
-    </p>
+    <p style={styles.formTitle}>{TIER_COPY[tier].title}</p>
+    <p style={styles.formSubtitle}>{TIER_COPY[tier].blurb}</p>
 
     {showRefresh && (
       <div style={styles.employeeBar}>
