@@ -48,6 +48,14 @@ function App() {
   const [uploadedFileName, setUploadedFileName] = useState(null);
   const [uploading, setUploading] = useState(false);
 
+  // Chat history. Each audience keeps its own list of past chats on the server;
+  // `conversations` is the list for the audience currently selected.
+  const [conversations, setConversations] = useState([]);
+  const [conversationsLoading, setConversationsLoading] = useState(false);
+  const [activeConversationId, setActiveConversationId] = useState(null); // null = a new, unsaved chat
+  const [openingConversation, setOpeningConversation] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false); // mobile drawer only
+
   const [employeeProfile, setEmployeeProfile] = useState(null);
   const [profileLoading, setProfileLoading] = useState(false);
   const [showProfileForm, setShowProfileForm] = useState(false);
@@ -432,8 +440,8 @@ function App() {
   const handleDesktopSignOut = async () => {
     await window.electronAPI.clearStoredAuthToken();
     setDesktopToken(null);
-    setSubscriptions({});
-    setEmployeeProfile(null);
+    // Conversations, subscriptions and the audience are reset by the
+    // signed-in -> signed-out effect below, which also covers web sign-out.
   };
 
   // After returning from Stripe Checkout, the URL carries ?checkout=success
@@ -464,9 +472,206 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ---------------------------------------------------------------------
+  // Chat history
+  // ---------------------------------------------------------------------
+  // Refs give async callbacks the *current* values rather than the render
+  // they were created in, so a slow response can't land in the wrong audience.
+  const audienceRef = useRef(audience);
+  audienceRef.current = audience;
+  const loadingRef = useRef(loading);
+  loadingRef.current = loading;
+  const activeConversationIdRef = useRef(activeConversationId);
+  activeConversationIdRef.current = activeConversationId;
+  const messagesCountRef = useRef(messages.length);
+  messagesCountRef.current = messages.length;
+  const listSeqRef = useRef(0); // newest list request wins
+  const openSeqRef = useRef(0); // newest "open chat" request wins
+  const autoOpenedRef = useRef({}); // audience -> already auto-opened its latest chat
+  const wasSignedInRef = useRef(false);
+
+  const historyHeaders = async () => ({
+    "X-API-Key": API_KEY,
+    "Authorization": `Bearer ${await getAuthToken()}`,
+  });
+
+  const clearChatView = () => {
+    setMessages([]);
+    setActiveConversationId(null);
+    setSessionId(null);
+    setUploadedFileName(null);
+  };
+
+  const fetchConversations = async (forAudience) => {
+    const seq = ++listSeqRef.current;
+    setConversationsLoading(true);
+    try {
+      const res = await fetch(
+        `${API_BASE}/api/conversations?audience=${encodeURIComponent(forAudience)}`,
+        { headers: await historyHeaders() }
+      );
+      if (seq !== listSeqRef.current) return null; // stale
+      if (!res.ok) return null;
+      const data = await res.json();
+      if (seq !== listSeqRef.current) return null;
+      setConversations(data);
+      return data;
+    } catch (err) {
+      console.error("HISTORY LIST ERROR:", err);
+      return null;
+    } finally {
+      if (seq === listSeqRef.current) setConversationsLoading(false);
+    }
+  };
+
+  const openConversation = async (id) => {
+    if (loadingRef.current) return;
+    if (id === activeConversationIdRef.current) {
+      setSidebarOpen(false);
+      return;
+    }
+    const forAudience = audienceRef.current;
+    const seq = ++openSeqRef.current;
+    setOpeningConversation(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/conversations/${encodeURIComponent(id)}`, {
+        headers: await historyHeaders(),
+      });
+      if (seq !== openSeqRef.current) return;
+      if (res.status === 404) {
+        // Deleted elsewhere (e.g. on the other app). Drop it from the list.
+        setConversations((prev) => prev.filter((c) => c.id !== id));
+        return;
+      }
+      if (res.status === 402) {
+        await fetchSubscriptionStatus(forAudience);
+        return;
+      }
+      if (!res.ok) throw new Error("Request failed");
+      const data = await res.json();
+      if (seq !== openSeqRef.current || data.audience !== audienceRef.current) return;
+      setMessages(
+        data.messages.map((m) => ({
+          role: m.role,
+          text: m.text,
+          severity: m.severity,
+          triage: m.triage,
+          emergency: m.emergency,
+        }))
+      );
+      setActiveConversationId(data.id);
+      setSessionId(null);
+      setUploadedFileName(null);
+      setSidebarOpen(false);
+    } catch (err) {
+      console.error("HISTORY OPEN ERROR:", err);
+      if (seq === openSeqRef.current) {
+        setMessages((prev) => [
+          ...prev,
+          { role: "assistant", text: "Couldn't load that chat. Please try again.", error: true },
+        ]);
+      }
+    } finally {
+      if (seq === openSeqRef.current) setOpeningConversation(false);
+    }
+  };
+
+  const newConversation = () => {
+    if (loadingRef.current) return;
+    openSeqRef.current++;
+    setOpeningConversation(false);
+    clearChatView();
+    setSidebarOpen(false);
+  };
+
+  const deleteConversation = async (id) => {
+    if (loadingRef.current) return;
+    if (!window.confirm("Delete this chat? This can't be undone.")) return;
+    try {
+      const res = await fetch(`${API_BASE}/api/conversations/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+        headers: await historyHeaders(),
+      });
+      if (!res.ok && res.status !== 404) throw new Error("Request failed");
+      setConversations((prev) => prev.filter((c) => c.id !== id));
+      if (activeConversationIdRef.current === id) {
+        openSeqRef.current++;
+        setOpeningConversation(false);
+        clearChatView();
+      }
+    } catch (err) {
+      console.error("HISTORY DELETE ERROR:", err);
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", text: "Couldn't delete that chat. Please try again.", error: true },
+      ]);
+    }
+  };
+
+  // Switching audience starts from a clean slate: the chat on screen belongs
+  // to the previous audience and must never show under the new one.
+  useEffect(() => {
+    listSeqRef.current++;
+    openSeqRef.current++;
+    setOpeningConversation(false);
+    setConversationsLoading(false);
+    setConversations([]);
+    clearChatView();
+    setSidebarOpen(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [audience]);
+
+  // Load this audience's chat list once the user is signed in and entitled to
+  // it, and reopen the most recent chat the first time the audience is shown
+  // (this is what makes a page reload restore where you left off).
+  useEffect(() => {
+    if (!signedIn || !hasAccess) {
+      setConversations([]);
+      return;
+    }
+    const forAudience = audience;
+    (async () => {
+      const list = await fetchConversations(forAudience);
+      if (
+        list && list.length > 0 &&
+        !autoOpenedRef.current[forAudience] &&
+        audienceRef.current === forAudience &&
+        activeConversationIdRef.current === null &&
+        messagesCountRef.current === 0 &&
+        !loadingRef.current
+      ) {
+        autoOpenedRef.current[forAudience] = true;
+        openConversation(list[0].id);
+      } else if (list) {
+        autoOpenedRef.current[forAudience] = true;
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [signedIn, hasAccess, audience]);
+
+  // Signing out (web via Clerk's UserButton, desktop via our button) must not
+  // leave the previous account's chats or subscriptions on screen.
+  useEffect(() => {
+    if (wasSignedInRef.current && !signedIn) {
+      listSeqRef.current++;
+      openSeqRef.current++;
+      autoOpenedRef.current = {};
+      setConversations([]);
+      setSubscriptions({});
+      setEmployeeProfile(null);
+      clearChatView();
+      setAudience("individual");
+    }
+    wasSignedInRef.current = signedIn;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [signedIn]);
+
   const sendMessage = async () => {
     const question = input.trim();
-    if (!question || loading || !hasAccess) return;
+    if (!question || loading || openingConversation || !hasAccess) return;
+
+    const sendAudience = audience;
+    let savedConversationId = null;
 
     setMessages((prev) => [...prev, { role: "user", text: question }]);
     setInput("");
@@ -483,8 +688,26 @@ function App() {
           "X-API-Key": API_KEY,
           "Authorization": `Bearer ${token}`,
         },
-        body: JSON.stringify({ question, audience, session_id: sessionId }),
+        body: JSON.stringify({
+          question,
+          audience: sendAudience,
+          session_id: sessionId,
+          // Opt in to server-side history; older builds omit this and nothing is saved.
+          save_history: true,
+          conversation_id: activeConversationId,
+        }),
       });
+
+      if (res.status === 404 && activeConversationId) {
+        // The chat we were continuing no longer exists (deleted on another device).
+        setActiveConversationId(null);
+        fetchConversations(sendAudience);
+        setMessages((prev) => [
+          ...prev,
+          { role: "assistant", text: "This chat no longer exists, so your message wasn't sent. Send it again to start a new chat.", error: true },
+        ]);
+        return;
+      }
 
       if (res.status === 402) {
         // The server says this audience needs a subscription we don't have
@@ -517,6 +740,10 @@ function App() {
           if (!line.startsWith("data: ")) continue;
           const payload = JSON.parse(line.slice(6));
 
+          // Even failed turns carry the id: the question was saved, so a retry
+          // should continue the same chat instead of starting another.
+          if (payload.conversation_id) savedConversationId = payload.conversation_id;
+
           if (payload.step === "error") {
             throw new Error(payload.error || "Stream error");
           }
@@ -532,7 +759,9 @@ function App() {
         await new Promise((resolve) => setTimeout(resolve, MIN_STEP_DISPLAY_MS));
       }
 
-      if (finalPayload) {
+      // The user may have switched audience while this was running; never show
+      // an answer under the wrong audience.
+      if (finalPayload && audienceRef.current === sendAudience) {
         setMessages((prev) => [
           ...prev,
           {
@@ -546,13 +775,19 @@ function App() {
       }
     } catch (err) {
       console.error("STREAM ERROR:", err);
-      setMessages((prev) => [
-        ...prev,
-        { role: "assistant", text: "Something went wrong. Please try again.", error: true },
+      if (audienceRef.current === sendAudience) {
+        setMessages((prev) => [
+          ...prev,
+          { role: "assistant", text: "Something went wrong. Please try again.", error: true },
         ]);
+      }
     } finally {
       setLoading(false);
       setCurrentStep(null);
+      if (savedConversationId && audienceRef.current === sendAudience) {
+        setActiveConversationId(savedConversationId);
+        fetchConversations(sendAudience);
+      }
     }
   };
 
@@ -601,7 +836,66 @@ function App() {
       )}
 
       {desktopTokenLoaded && signedIn && (
-        <div style={{ ...styles.container, position: "relative" }}>
+        <div className="synora-shell">
+        <aside className={`synora-sidebar${sidebarOpen ? " open" : ""}`} aria-label="Chat history">
+          <div className="synora-sidebar-head">
+            <span className="synora-sidebar-title">
+              {audience.charAt(0).toUpperCase() + audience.slice(1)} chats
+            </span>
+            <button
+              className="synora-newchat"
+              onClick={newConversation}
+              disabled={loading || openingConversation || !hasAccess}
+            >
+              + New
+            </button>
+          </div>
+          <div className="synora-sidebar-list">
+            {!hasAccess ? (
+              <p className="synora-sidebar-empty">
+                Subscribe to the {audience} plan to start and keep chats here.
+              </p>
+            ) : conversationsLoading && conversations.length === 0 ? (
+              <p className="synora-sidebar-empty">Loading chats...</p>
+            ) : conversations.length === 0 ? (
+              <p className="synora-sidebar-empty">
+                No saved chats yet. Ask a question and it will appear here.
+              </p>
+            ) : (
+              conversations.map((c) => (
+                <div
+                  key={c.id}
+                  className={`synora-chat-row${c.id === activeConversationId ? " active" : ""}`}
+                >
+                  <button
+                    className="synora-chat-open"
+                    onClick={() => openConversation(c.id)}
+                    disabled={loading || openingConversation}
+                    title={c.title}
+                  >
+                    <span className="synora-chat-name">{c.title}</span>
+                    <span className="synora-chat-date">{formatChatDate(c.updated_at)}</span>
+                  </button>
+                  <button
+                    className="synora-chat-del"
+                    onClick={() => deleteConversation(c.id)}
+                    disabled={loading || openingConversation}
+                    aria-label="Delete chat"
+                    title="Delete chat"
+                  >
+                    ×
+                  </button>
+                </div>
+              ))
+            )}
+          </div>
+        </aside>
+        {sidebarOpen && <div className="synora-backdrop" onClick={() => setSidebarOpen(false)} />}
+
+        <div style={{ ...styles.container, position: "relative", flex: "1 1 auto", minWidth: 0 }}>
+          <button className="synora-chats-toggle" onClick={() => setSidebarOpen(true)}>
+            Chats
+          </button>
           <div style={{ position: "absolute", top: "1rem", right: "1rem" }}>
             {isDesktop ? (
               <button style={styles.signOutButton} onClick={handleDesktopSignOut}>
@@ -625,6 +919,7 @@ function App() {
                 <button
                   key={option}
                   onClick={() => setAudience(option)}
+                  disabled={loading}
                   style={{
                     ...styles.audienceButton,
                     ...(audience === option ? styles.audienceButtonActive : {}),
@@ -777,13 +1072,14 @@ function App() {
               style={styles.input}
               disabled={!hasAccess}
             />
-            <button onClick={sendMessage} style={styles.sendButton} disabled={loading || !hasAccess}>
+            <button onClick={sendMessage} style={styles.sendButton} disabled={loading || openingConversation || !hasAccess}>
               Send
             </button>
           </div>
 
           <p style={styles.disclaimer}>Not a substitute for professional medical advice.</p>
           <Footer />
+        </div>
         </div>
       )}
     </div>
@@ -1312,8 +1608,74 @@ const Footer = () => (
   </div>
 );
 
+// "3:42 PM" for today, "Oct 25" otherwise. Empty string if the date is unusable.
+const formatChatDate = (iso) => {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  if (d.toDateString() === new Date().toDateString()) {
+    return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  }
+  return d.toLocaleDateString([], { month: "short", day: "numeric" });
+};
+
 const GlobalStyle = () => (
   <style>{`
+    .synora-shell {
+      display: flex; gap: 16px; align-items: flex-start; justify-content: center;
+      width: 100%; max-width: 760px;
+    }
+    .synora-sidebar {
+      width: 240px; flex: none; box-sizing: border-box;
+      background: #ffffff; border: 1px solid #eceae4; border-radius: 20px;
+      box-shadow: 0 4px 24px rgba(20, 40, 40, 0.06);
+      padding: 1rem; display: flex; flex-direction: column;
+      position: sticky; top: 1.5rem; max-height: calc(100vh - 3rem);
+    }
+    .synora-sidebar-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+    .synora-sidebar-title { font-size: 13px; font-weight: 600; color: #1c2b28; }
+    .synora-newchat {
+      font-size: 12px; font-weight: 500; color: #2f6f65; background: #eef5f3;
+      border: none; border-radius: 8px; padding: 5px 10px; cursor: pointer;
+    }
+    .synora-newchat:disabled, .synora-chat-open:disabled, .synora-chat-del:disabled { opacity: 0.5; cursor: default; }
+    .synora-sidebar-list { overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+    .synora-sidebar-empty { font-size: 12px; color: #7c8b87; margin: 8px 2px; line-height: 1.5; }
+    .synora-chat-row { display: flex; align-items: center; border-radius: 10px; }
+    .synora-chat-row:hover { background: #f4f6f5; }
+    .synora-chat-row.active { background: #e6f0ed; }
+    .synora-chat-open {
+      flex: 1; min-width: 0; text-align: left; background: none; border: none; cursor: pointer;
+      padding: 8px 10px; display: flex; flex-direction: column; gap: 2px; font-family: inherit;
+    }
+    .synora-chat-name {
+      font-size: 13px; color: #1c2b28; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .synora-chat-date { font-size: 11px; color: #9aa7a3; }
+    .synora-chat-del {
+      background: none; border: none; color: #9aa7a3; font-size: 18px; line-height: 1;
+      cursor: pointer; padding: 6px 10px; border-radius: 8px; opacity: 0;
+    }
+    .synora-chat-row:hover .synora-chat-del, .synora-chat-row.active .synora-chat-del,
+    .synora-chat-del:focus-visible { opacity: 1; }
+    .synora-chat-del:hover { color: #b3402f; }
+    .synora-chats-toggle, .synora-backdrop { display: none; }
+    @media (hover: none) { .synora-chat-del { opacity: 1; } }
+    @media (max-width: 820px) {
+      .synora-shell { display: block; max-width: 480px; }
+      .synora-sidebar {
+        position: fixed; top: 0; left: 0; bottom: 0; max-height: none; z-index: 50;
+        width: 280px; max-width: 85vw; border-radius: 0 20px 20px 0;
+        transform: translateX(-105%); transition: transform 0.2s ease;
+      }
+      .synora-sidebar.open { transform: none; }
+      .synora-backdrop { display: block; position: fixed; inset: 0; background: rgba(0, 0, 0, 0.35); z-index: 40; }
+      .synora-chats-toggle {
+        display: block; position: absolute; top: 1rem; left: 1rem; z-index: 1;
+        font-size: 12px; font-weight: 500; color: #2f6f65; background: #eef5f3;
+        border: none; border-radius: 8px; padding: 6px 12px; cursor: pointer;
+      }
+    }
     @keyframes fadeSlideIn {
       from { opacity: 0; transform: translateY(6px); }
       to { opacity: 1; transform: translateY(0); }
