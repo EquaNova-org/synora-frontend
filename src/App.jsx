@@ -359,13 +359,28 @@ function App() {
     }
   };
 
-  const fetchDownloadLink = async (platform) => {
+  const fetchDownloadLink = async (platform, tier) => {
     setDownloadLoading(platform);
     try {
       const token = await getAuthToken();
-      const res = await fetch(`${API_BASE}/api/employee/download?platform=${platform}`, {
+      const res = await fetch(`${API_BASE}/api/download?platform=${platform}&tier=${tier}`, {
         headers: { "X-API-Key": API_KEY, "Authorization": `Bearer ${token}` },
       });
+
+      if (res.status === 404) {
+        // The installer for this tier hasn't been published yet.
+        setMessages((prev) => [
+          ...prev,
+          { role: "assistant", text: "The desktop app for this plan isn't available yet. We'll let you know when it is.", error: true },
+        ]);
+        return;
+      }
+
+      if (res.status === 402) {
+        // Subscription lapsed -- re-check so the pricing panel shows.
+        await fetchSubscriptionStatus(tier);
+        return;
+      }
 
       if (!res.ok) throw new Error("Failed to get download link");
 
@@ -964,19 +979,21 @@ function App() {
             </div>
           )}
 
-          {audience === "employee" && subscription?.status === "active" && (
+          {isPaidAudience && subscription?.status === "active" && (
             <div style={styles.downloadBox}>
-              <p style={styles.downloadLabel}>Get the desktop app</p>
+              <p style={styles.downloadLabel}>
+                {audience === "doctor" ? "Get the doctor desktop app" : "Get the desktop app"}
+              </p>
               <div style={{ display: "flex", gap: "8px" }}>
                 <button
-                  onClick={() => fetchDownloadLink("win")}
+                  onClick={() => fetchDownloadLink("win", audience)}
                   style={styles.downloadButton}
                   disabled={downloadLoading !== null}
                 >
                   {downloadLoading === "win" ? "Preparing..." : "Download for Windows"}
                 </button>
                 <button
-                  onClick={() => fetchDownloadLink("mac")}
+                  onClick={() => fetchDownloadLink("mac", audience)}
                   style={styles.downloadButton}
                   disabled={downloadLoading !== null}
                 >
