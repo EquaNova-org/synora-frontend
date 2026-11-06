@@ -55,6 +55,23 @@ function App() {
   const [activeConversationId, setActiveConversationId] = useState(null); // null = a new, unsaved chat
   const [openingConversation, setOpeningConversation] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false); // mobile drawer only
+  const [libraryTab, setLibraryTab] = useState("chats"); // "chats" | "sources"
+  const [traceSteps, setTraceSteps] = useState([]); // agent steps of the latest turn
+
+  const [theme, setTheme] = useState(() => {
+    try {
+      return localStorage.getItem("synora-theme") === "dark" ? "dark" : "light";
+    } catch {
+      return "light";
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem("synora-theme", theme);
+    } catch {
+      /* storage unavailable (private mode); the theme just won't persist */
+    }
+  }, [theme]);
 
   const [employeeProfile, setEmployeeProfile] = useState(null);
   const [profileLoading, setProfileLoading] = useState(false);
@@ -515,6 +532,7 @@ function App() {
     setActiveConversationId(null);
     setSessionId(null);
     setUploadedFileName(null);
+    setTraceSteps([]);
   };
 
   const fetchConversations = async (forAudience) => {
@@ -577,6 +595,7 @@ function App() {
       setActiveConversationId(data.id);
       setSessionId(null);
       setUploadedFileName(null);
+      setTraceSteps([]);
       setSidebarOpen(false);
     } catch (err) {
       console.error("HISTORY OPEN ERROR:", err);
@@ -692,6 +711,7 @@ function App() {
     setInput("");
     setLoading(true);
     setCurrentStep(null);
+    setTraceSteps([]);
 
     try {
       const token = await getAuthToken();
@@ -769,8 +789,9 @@ function App() {
       }
 
       const MIN_STEP_DISPLAY_MS = 500;
-      for (const step of stepQueue) {
+      for (const [stepIndex, step] of stepQueue.entries()) {
         setCurrentStep(step);
+        setTraceSteps(stepQueue.slice(0, stepIndex + 1));
         await new Promise((resolve) => setTimeout(resolve, MIN_STEP_DISPLAY_MS));
       }
 
@@ -813,290 +834,452 @@ function App() {
     }
   };
 
+  const audienceLabel = audience.charAt(0).toUpperCase() + audience.slice(1);
+  const planActive = isPaidAudience && subscription?.status === "active";
+
+  const stepStatus = (i) => (loading && i === traceSteps.length - 1 ? "active" : "done");
+
   return (
-    <div style={styles.page}>
+    <div className="synora-app" data-theme={theme}>
       <GlobalStyle />
 
       {desktopTokenLoaded && !signedIn && (
-        <div style={styles.container}>
-          <div style={styles.header}>
-            <div style={styles.logo}>S</div>
-            <h1 style={styles.title}>Synora</h1>
-            <p style={styles.subtitle}>Evidence-grounded health guidance</p>
+        <div className="synora-auth-wrap">
+          <div className="synora-auth-card">
+            <div className="synora-brand synora-brand-center">
+              <SynoraMark size={44} />
+              <h1 className="synora-wordmark">Synora</h1>
+            </div>
+            <p className="synora-muted" style={{ textAlign: "center", margin: "6px 0 18px" }}>
+              Evidence-grounded health guidance
+            </p>
+            <p className="synora-muted" style={{ textAlign: "center", marginBottom: "1rem" }}>
+              Please sign in to continue.
+            </p>
+            {isDesktop ? (
+              <button style={{ ...styles.sendButton, width: "100%" }} onClick={handleDesktopSignIn}>
+                Sign In
+              </button>
+            ) : (
+              <SignInButton mode="modal">
+                <button style={{ ...styles.sendButton, width: "100%" }}>Sign In</button>
+              </SignInButton>
+            )}
+            <p style={styles.legalConsent}>
+              By signing in, you agree to our{" "}
+              <a href="/terms-of-service.html" target="_blank" rel="noopener noreferrer" style={styles.legalLink}>
+                Terms of Service
+              </a>{" "}
+              and{" "}
+              <a href="/privacy-policy.html" target="_blank" rel="noopener noreferrer" style={styles.legalLink}>
+                Privacy Policy
+              </a>.
+            </p>
+            <Footer />
           </div>
-          <p style={{ textAlign: "center", fontSize: "13px", color: "#7c8b87", marginBottom: "1rem" }}>
-            Please sign in to continue.
-          </p>
-          {isDesktop ? (
-            <button style={styles.sendButton} onClick={handleDesktopSignIn}>
-              Sign In
-            </button>
-          ) : (
-            <SignInButton mode="modal">
-              <button style={styles.sendButton}>Sign In</button>
-            </SignInButton>
-          )}
-          <p style={styles.legalConsent}>
-            By signing in, you agree to our{" "}
-            <a href="/terms-of-service.html" target="_blank" rel="noopener noreferrer" style={styles.legalLink}>
-              Terms of Service
-            </a>{" "}
-            and{" "}
-            <a href="/privacy-policy.html" target="_blank" rel="noopener noreferrer" style={styles.legalLink}>
-              Privacy Policy
-            </a>.
-          </p>
-          <Footer />
         </div>
       )}
 
       {desktopTokenLoaded && signedIn && (
         <div className="synora-shell">
-        <aside className={`synora-sidebar${sidebarOpen ? " open" : ""}`} aria-label="Chat history">
-          <div className="synora-sidebar-head">
-            <span className="synora-sidebar-title">
-              {audience.charAt(0).toUpperCase() + audience.slice(1)} chats
-            </span>
-            <button
-              className="synora-newchat"
-              onClick={newConversation}
-              disabled={loading || openingConversation || !hasAccess}
-            >
-              + New
-            </button>
-          </div>
-          <div className="synora-sidebar-list">
-            {!hasAccess ? (
-              <p className="synora-sidebar-empty">
-                Subscribe to the {audience} plan to start and keep chats here.
-              </p>
-            ) : conversationsLoading && conversations.length === 0 ? (
-              <p className="synora-sidebar-empty">Loading chats...</p>
-            ) : conversations.length === 0 ? (
-              <p className="synora-sidebar-empty">
-                No saved chats yet. Ask a question and it will appear here.
-              </p>
-            ) : (
-              conversations.map((c) => (
-                <div
-                  key={c.id}
-                  className={`synora-chat-row${c.id === activeConversationId ? " active" : ""}`}
-                >
-                  <button
-                    className="synora-chat-open"
-                    onClick={() => openConversation(c.id)}
-                    disabled={loading || openingConversation}
-                    title={c.title}
-                  >
-                    <span className="synora-chat-name">{c.title}</span>
-                    <span className="synora-chat-date">{formatChatDate(c.updated_at)}</span>
-                  </button>
-                  <button
-                    className="synora-chat-del"
-                    onClick={() => deleteConversation(c.id)}
-                    disabled={loading || openingConversation}
-                    aria-label="Delete chat"
-                    title="Delete chat"
-                  >
-                    ×
-                  </button>
-                </div>
-              ))
-            )}
-          </div>
-        </aside>
-        {sidebarOpen && <div className="synora-backdrop" onClick={() => setSidebarOpen(false)} />}
+          {/* ---------- Left: library ---------- */}
+          <aside className={`synora-sidebar${sidebarOpen ? " open" : ""}`} aria-label="Library">
+            <div className="synora-brand">
+              <SynoraMark size={34} />
+              <span className="synora-wordmark">Synora</span>
+            </div>
 
-        <div style={{ ...styles.container, position: "relative", flex: "1 1 auto", minWidth: 0 }}>
-          <button className="synora-chats-toggle" onClick={() => setSidebarOpen(true)}>
-            Chats
-          </button>
-          <div style={{ position: "absolute", top: "1rem", right: "1rem" }}>
-            {isDesktop ? (
-              <button style={styles.signOutButton} onClick={handleDesktopSignOut}>
-                Sign Out
+            <div role="group" aria-label="Library view" className="synora-segwrap">
+              <button className="seg" aria-pressed={libraryTab === "sources"} onClick={() => setLibraryTab("sources")}>
+                Sources
               </button>
-            ) : (
-              <UserButton />
-            )}
-          </div>
-
-          <div style={styles.header}>
-            <div style={styles.logo}>S</div>
-            <h1 style={styles.title}>Synora</h1>
-            <p style={styles.subtitle}>Evidence-grounded health guidance</p>
-          </div>
-
-          <div style={styles.audienceBox}>
-            <p style={styles.audienceLabel}>Who are you checking in as?</p>
-            <div style={styles.audienceButtons}>
-              {["individual", "employee", "doctor"].map((option) => (
-                <button
-                  key={option}
-                  onClick={() => setAudience(option)}
-                  disabled={loading}
-                  style={{
-                    ...styles.audienceButton,
-                    ...(audience === option ? styles.audienceButtonActive : {}),
-                  }}
-                >
-                  {option.charAt(0).toUpperCase() + option.slice(1)}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {isPaidAudience && subscriptionLoading && (
-            <p style={styles.emptyState}>Checking your subscription...</p>
-          )}
-
-          {isPaidAudience && !subscriptionLoading && subscription?.status !== "active" && (
-            <PricingPanel
-              tier={audience}
-              onSelectPlan={(plan) => startCheckout(plan, audience)}
-              loadingPlan={checkoutLoading}
-              showRefresh={pendingCheckout}
-              onRefresh={() => refreshSubscriptionStatus(audience)}
-              refreshing={subscriptionLoading}
-              isDesktop={isDesktop}
-            />
-          )}
-
-          {audience === "employee" && !subscriptionLoading && subscription?.status === "active" &&
-            !profileLoading && employeeProfile && !showProfileForm && (
-            <div style={styles.employeeBar}>
-              <span style={styles.employeeBarText}>
-                {employeeProfile.job_role || "Workplace profile set"}
-              </span>
-              <div style={{ display: "flex", gap: "8px" }}>
-                <button onClick={() => setShowCheckin(true)} style={styles.employeeBarButton}>
-                  Check in
-                </button>
-                <button onClick={() => setShowProfileForm(true)} style={styles.employeeBarButtonGhost}>
-                  Edit profile
-                </button>
-              </div>
-            </div>
-          )}
-
-          {isPaidAudience && subscription?.status === "active" && (
-            <div style={styles.downloadBox}>
-              <p style={styles.downloadLabel}>
-                {audience === "doctor" ? "Get the doctor desktop app" : "Get the desktop app"}
-              </p>
-              <div style={{ display: "flex", gap: "8px" }}>
-                <button
-                  onClick={() => fetchDownloadLink("win", audience)}
-                  style={styles.downloadButton}
-                  disabled={downloadLoading !== null}
-                >
-                  {downloadLoading === "win" ? "Preparing..." : "Download for Windows"}
-                </button>
-                <button
-                  onClick={() => fetchDownloadLink("mac", audience)}
-                  style={styles.downloadButton}
-                  disabled={downloadLoading !== null}
-                >
-                  {downloadLoading === "mac" ? "Preparing..." : "Download for Mac"}
-                </button>
-              </div>
-            </div>
-          )}
-
-          {audience === "employee" && subscription?.status === "active" && showProfileForm && (
-            <EmployeeProfileForm
-              initial={employeeProfile}
-              onSave={saveEmployeeProfile}
-              onCancel={() => employeeProfile && setShowProfileForm(false)}
-            />
-          )}
-
-          {audience === "employee" && subscription?.status === "active" && showCheckin && (
-            <CheckinForm
-              onSubmit={submitCheckin}
-              onCancel={() => setShowCheckin(false)}
-              submitting={checkinSubmitting}
-            />
-          )}
-
-          {uploadedFileName && (
-            <div style={styles.fileChip}>
-              <span>📄 {uploadedFileName}</span>
-              <button
-                onClick={() => { setSessionId(null); setUploadedFileName(null); }}
-                style={styles.fileChipRemove}
-              >
-                ×
+              <button className="seg" aria-pressed={libraryTab === "chats"} onClick={() => setLibraryTab("chats")}>
+                Chats
               </button>
             </div>
-          )}
 
-          <div style={styles.chatWindow}>
-            {messages.length === 0 && (
-              <p style={styles.emptyState}>Ask a health question to get started.</p>
-            )}
-            {messages.map((msg, i) => (
-              <div
-                key={i}
-                style={{
-                  ...styles.bubble,
-                  ...(msg.role === "user" ? styles.userBubble : styles.assistantBubble),
-                }}
-              >
-                {msg.text}
-                {msg.role === "assistant" && (msg.severity || msg.triage) && (
-                  <div style={styles.badgeRow}>
-                    {msg.severity && (
-                      <span style={styles.badge}>Severity: {msg.severity}</span>
-                    )}
-                    {msg.triage && (
-                      <span style={styles.badge}>Triage: {msg.triage.replaceAll("_", " ")}</span>
-                    )}
+            {libraryTab === "sources" && (
+              <div className="synora-tabbody">
+                {audience === "doctor" && (
+                  <div className="synora-group">
+                    <span className="synora-eyebrow">Knowledge base</span>
+                    <div className="synora-card synora-card-accent">
+                      <span className="synora-card-title">Doctor knowledge base</span>
+                      <span className="synora-muted-sm">Clinical guidelines and specialty content. Always used for Doctor answers.</span>
+                    </div>
                   </div>
                 )}
+
+                <div className="synora-group">
+                  <div className="synora-row-between">
+                    <span className="synora-eyebrow">Your documents</span>
+                    <button
+                      className="synora-linkbtn"
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={uploading}
+                    >
+                      <PaperclipIcon size={14} />
+                      {uploading ? "Adding..." : "Add PDF"}
+                    </button>
+                  </div>
+                  {uploadedFileName ? (
+                    <div className="synora-card">
+                      <div className="synora-row-between">
+                        <span className="synora-card-title" style={{ wordBreak: "break-word" }}>{uploadedFileName}</span>
+                        <button
+                          className="synora-x"
+                          onClick={() => { setSessionId(null); setUploadedFileName(null); }}
+                          aria-label="Stop using this document"
+                          title="Stop using this document"
+                        >
+                          ×
+                        </button>
+                      </div>
+                      <span className="synora-muted-sm">Used in this chat</span>
+                    </div>
+                  ) : (
+                    <p className="synora-muted-sm" style={{ margin: 0, lineHeight: 1.5 }}>
+                      No documents added yet. Add a PDF and answers can draw on it.
+                    </p>
+                  )}
+                </div>
+
+                <div className="synora-group">
+                  <span className="synora-eyebrow">Folders on this computer</span>
+                  <div className="synora-card synora-card-dashed">
+                    <span className="synora-muted-sm" style={{ lineHeight: 1.5 }}>
+                      Organizing a folder into a private library is coming to the desktop app. You will choose each folder.
+                    </span>
+                  </div>
+                </div>
               </div>
-            ))}
-            {loading && (
-              <p style={styles.loadingText}>
-                {currentStep ? STEP_LABELS[currentStep] || "Processing..." : "Starting..."}
-              </p>
             )}
-            <div ref={bottomRef} />
-          </div>
 
-          <div style={styles.inputRow}>
-            <input
-              type="file"
-              accept="application/pdf"
-              ref={fileInputRef}
-              onChange={handleFileUpload}
-              style={{ display: "none" }}
-            />
-            <button
-              onClick={() => fileInputRef.current.click()}
-              style={styles.uploadButton}
-              disabled={uploading}
-              title="Upload a document"
-            >
-              +
-            </button>
-            <input
-              type="text"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder={hasAccess ? "Ask a health question" : "Subscribe to use this audience"}
-              style={styles.input}
-              disabled={!hasAccess}
-            />
-            <button onClick={sendMessage} style={styles.sendButton} disabled={loading || openingConversation || !hasAccess}>
-              Send
-            </button>
-          </div>
+            {libraryTab === "chats" && (
+              <div className="synora-tabbody synora-chatlist">
+                <button
+                  className="synora-primary-wide"
+                  onClick={newConversation}
+                  disabled={loading || openingConversation || !hasAccess}
+                >
+                  <PlusIcon size={14} />
+                  New chat
+                </button>
+                <span className="synora-eyebrow" style={{ paddingTop: 6 }}>{audienceLabel} chats</span>
+                <div className="synora-sidebar-list">
+                  {!hasAccess ? (
+                    <p className="synora-sidebar-empty">
+                      Subscribe to the {audience} plan to start and keep chats here.
+                    </p>
+                  ) : conversationsLoading && conversations.length === 0 ? (
+                    <p className="synora-sidebar-empty">Loading chats...</p>
+                  ) : conversations.length === 0 ? (
+                    <p className="synora-sidebar-empty">
+                      No saved chats yet. Ask a question and it will appear here.
+                    </p>
+                  ) : (
+                    conversations.map((c) => (
+                      <div
+                        key={c.id}
+                        className={`synora-chat-row${c.id === activeConversationId ? " active" : ""}`}
+                      >
+                        <button
+                          className="synora-chat-open"
+                          onClick={() => openConversation(c.id)}
+                          disabled={loading || openingConversation}
+                          title={c.title}
+                        >
+                          <span className="synora-chat-name">{c.title}</span>
+                          <span className="synora-chat-date">{formatChatDate(c.updated_at)}</span>
+                        </button>
+                        <button
+                          className="synora-chat-del"
+                          onClick={() => deleteConversation(c.id)}
+                          disabled={loading || openingConversation}
+                          aria-label="Delete chat"
+                          title="Delete chat"
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            )}
 
-          <p style={styles.disclaimer}>Not a substitute for professional medical advice.</p>
-          <Footer />
-        </div>
+            <div style={{ flexGrow: 1 }} />
+
+            {/* Profile: moved here from the top bar, directly above the plan card */}
+            {isDesktop ? (
+              <button className="synora-profile" onClick={handleDesktopSignOut} aria-label="Sign out">
+                <span className="synora-avatar"><SignOutIcon size={16} /></span>
+                <span className="synora-profile-text">
+                  <span className="synora-card-title">Sign out</span>
+                  <span className="synora-muted-sm">End this session</span>
+                </span>
+              </button>
+            ) : (
+              <div className="synora-profile">
+                <UserButton />
+                <span className="synora-profile-text">
+                  <span className="synora-card-title">Profile</span>
+                  <span className="synora-muted-sm">Account and settings</span>
+                </span>
+              </div>
+            )}
+
+            <div className="synora-plan">
+              <div className="synora-row-between">
+                <span className="synora-card-title">{audienceLabel} plan</span>
+                <span className={`synora-pill${isPaidAudience && !planActive ? " synora-pill-muted" : ""}`}>
+                  {!isPaidAudience ? "Free" : planActive ? "Active" : subscriptionLoading ? "Checking" : "Not active"}
+                </span>
+              </div>
+              {planActive && !isDesktop && (
+                <>
+                  <div className="synora-dl-row">
+                    <button
+                      className="synora-ghostbtn"
+                      onClick={() => fetchDownloadLink("win", audience)}
+                      disabled={downloadLoading !== null}
+                    >
+                      {downloadLoading === "win" ? "Preparing..." : "Windows"}
+                    </button>
+                    <button
+                      className="synora-ghostbtn"
+                      onClick={() => fetchDownloadLink("mac", audience)}
+                      disabled={downloadLoading !== null}
+                    >
+                      {downloadLoading === "mac" ? "Preparing..." : "Mac"}
+                    </button>
+                  </div>
+                  <span className="synora-muted-sm" style={{ textAlign: "center" }}>
+                    {audience === "doctor" ? "Download the doctor desktop app" : "Download the desktop app"}
+                  </span>
+                </>
+              )}
+              {planActive && isDesktop && (
+                <span className="synora-muted-sm" style={{ textAlign: "center" }}>You are using the desktop app</span>
+              )}
+              {!isPaidAudience && (
+                <span className="synora-muted-sm" style={{ textAlign: "center" }}>
+                  Employee and Doctor plans unlock the desktop app
+                </span>
+              )}
+              {isPaidAudience && !planActive && !subscriptionLoading && (
+                <span className="synora-muted-sm" style={{ textAlign: "center" }}>Choose a plan to unlock this audience</span>
+              )}
+            </div>
+          </aside>
+          {sidebarOpen && <div className="synora-backdrop" onClick={() => setSidebarOpen(false)} />}
+
+          {/* ---------- Center: conversation ---------- */}
+          <main className="synora-main">
+            <div className="synora-topbar">
+              <button className="synora-chats-toggle" onClick={() => setSidebarOpen(true)}>Library</button>
+              <div role="group" aria-label="Who are you checking in as" className="synora-audience">
+                {["individual", "employee", "doctor"].map((option) => (
+                  <button
+                    key={option}
+                    onClick={() => setAudience(option)}
+                    disabled={loading}
+                    aria-pressed={audience === option}
+                    className="synora-audience-btn"
+                  >
+                    {option.charAt(0).toUpperCase() + option.slice(1)}
+                  </button>
+                ))}
+              </div>
+              <div role="group" aria-label="Theme" className="synora-segwrap synora-theme">
+                <button className="seg" aria-pressed={theme === "light"} aria-label="Light theme" onClick={() => setTheme("light")}>
+                  <SunIcon size={17} />
+                </button>
+                <button className="seg" aria-pressed={theme === "dark"} aria-label="Dark theme" onClick={() => setTheme("dark")}>
+                  <MoonIcon size={17} />
+                </button>
+              </div>
+            </div>
+
+            <div className="synora-scroll">
+              <div className="synora-column">
+                {isPaidAudience && subscriptionLoading && (
+                  <p style={styles.emptyState}>Checking your subscription...</p>
+                )}
+
+                {isPaidAudience && !subscriptionLoading && subscription?.status !== "active" && (
+                  <PricingPanel
+                    tier={audience}
+                    onSelectPlan={(plan) => startCheckout(plan, audience)}
+                    loadingPlan={checkoutLoading}
+                    showRefresh={pendingCheckout}
+                    onRefresh={() => refreshSubscriptionStatus(audience)}
+                    refreshing={subscriptionLoading}
+                    isDesktop={isDesktop}
+                  />
+                )}
+
+                {audience === "employee" && !subscriptionLoading && subscription?.status === "active" &&
+                  !profileLoading && employeeProfile && !showProfileForm && (
+                  <div style={styles.employeeBar}>
+                    <span style={styles.employeeBarText}>
+                      {employeeProfile.job_role || "Workplace profile set"}
+                    </span>
+                    <div style={{ display: "flex", gap: "8px" }}>
+                      <button onClick={() => setShowCheckin(true)} style={styles.employeeBarButton}>
+                        Check in
+                      </button>
+                      <button onClick={() => setShowProfileForm(true)} style={styles.employeeBarButtonGhost}>
+                        Edit profile
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {audience === "employee" && subscription?.status === "active" && showProfileForm && (
+                  <EmployeeProfileForm
+                    initial={employeeProfile}
+                    onSave={saveEmployeeProfile}
+                    onCancel={() => employeeProfile && setShowProfileForm(false)}
+                  />
+                )}
+
+                {audience === "employee" && subscription?.status === "active" && showCheckin && (
+                  <CheckinForm
+                    onSubmit={submitCheckin}
+                    onCancel={() => setShowCheckin(false)}
+                    submitting={checkinSubmitting}
+                  />
+                )}
+
+                {messages.length === 0 && hasAccess && (
+                  <div className="synora-empty">
+                    <h1 className="synora-h1">Ask a health question to get started.</h1>
+                    <p className="synora-muted">
+                      Answers are grounded in the sources you have selected, and each one goes through evidence checks.
+                    </p>
+                  </div>
+                )}
+
+                {messages.map((msg, i) =>
+                  msg.role === "user" ? (
+                    <div key={i} className="synora-q">
+                      <span className="synora-eyebrow">Question</span>
+                      <h2 className="synora-h2">{msg.text}</h2>
+                    </div>
+                  ) : (
+                    <div
+                      key={i}
+                      className={`synora-a${msg.error ? " synora-a-error" : ""}${msg.system ? " synora-a-system" : ""}`}
+                    >
+                      {msg.text}
+                      {(msg.emergency || msg.severity || msg.triage) && (
+                        <div className="synora-badges">
+                          {msg.emergency && <span className="synora-badge synora-badge-urgent">Urgent guidance</span>}
+                          {msg.severity && <span className="synora-badge">Severity: {msg.severity}</span>}
+                          {msg.triage && <span className="synora-badge">Triage: {String(msg.triage).replaceAll("_", " ")}</span>}
+                        </div>
+                      )}
+                    </div>
+                  )
+                )}
+
+                {loading && (
+                  <p className="synora-loading">
+                    {currentStep ? STEP_LABELS[currentStep] || "Processing..." : "Starting..."}
+                  </p>
+                )}
+                <div ref={bottomRef} />
+              </div>
+            </div>
+
+            <div className="synora-composer-wrap">
+              <div className="synora-composer">
+                <input
+                  type="file"
+                  accept="application/pdf"
+                  ref={fileInputRef}
+                  onChange={handleFileUpload}
+                  style={{ display: "none" }}
+                />
+                <button
+                  onClick={() => fileInputRef.current.click()}
+                  className="synora-iconbtn"
+                  disabled={uploading}
+                  aria-label="Attach a PDF"
+                  title="Attach a PDF"
+                >
+                  <PaperclipIcon size={20} />
+                </button>
+                <input
+                  type="text"
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  placeholder={hasAccess ? "Ask a health question" : "Subscribe to use this audience"}
+                  aria-label="Ask a health question"
+                  className="synora-input"
+                  disabled={!hasAccess}
+                />
+                <button
+                  onClick={sendMessage}
+                  className="synora-send"
+                  aria-label="Send"
+                  disabled={loading || openingConversation || !hasAccess}
+                >
+                  <ArrowUpIcon size={20} />
+                </button>
+              </div>
+              <p className="synora-muted-sm" style={{ textAlign: "center", margin: "10px 0 0" }}>
+                Not a substitute for professional medical advice.
+              </p>
+              <Footer />
+            </div>
+          </main>
+
+          {/* ---------- Right: agent trace ---------- */}
+          <aside className="synora-trace" aria-label="Agent trace">
+            <div className="synora-row-between">
+              <span style={{ fontSize: 15, fontWeight: 700 }}>Agent trace</span>
+              {traceSteps.length > 0 && (
+                <span className="synora-mono" style={{ color: "var(--accent-text)" }}>
+                  {loading ? `${traceSteps.length} so far` : `${traceSteps.length} done`}
+                </span>
+              )}
+            </div>
+
+            {traceSteps.length === 0 ? (
+              <p className="synora-muted-sm" style={{ lineHeight: 1.55, margin: 0 }}>
+                Send a question to watch the agents work through it, step by step.
+              </p>
+            ) : (
+              <div className="synora-steps">
+                {traceSteps.map((step, i) => {
+                  const status = stepStatus(i);
+                  const last = i === traceSteps.length - 1;
+                  return (
+                    <div key={`${step}-${i}`} className="synora-step">
+                      <div className="synora-step-rail">
+                        <span className={`synora-dot ${status}`}>
+                          {status === "done" && <CheckIcon size={10} />}
+                        </span>
+                        {!last && <span className="synora-line" />}
+                      </div>
+                      <div className="synora-step-body" style={{ paddingBottom: last ? 0 : 14 }}>
+                        <span className="synora-mono" style={{ color: "var(--accent-text)" }}>{step}</span>
+                        <span style={{ fontSize: 13 }}>{STEP_LABELS[step] || step}</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            <div style={{ flexGrow: 1 }} />
+            <span className="synora-muted-sm" style={{ lineHeight: 1.55 }}>
+              Each citation in an answer should point to a passage the agents retrieved. If one can't be matched to a source, Synora falls back to a cautious answer instead.
+            </span>
+          </aside>
         </div>
       )}
     </div>
@@ -1292,325 +1475,216 @@ const SliderField = ({ label, value, onChange }) => (
   </div>
 );
 
+// ---------------------------------------------------------------------
+// Logo and icons
+// ---------------------------------------------------------------------
+// Synora mark: two overlapping circles (sources that agree) with the overlap
+// filled and a plus cut out of it. Colors come from the theme variables so it
+// works in light and dark.
+const SynoraMark = ({ size = 34 }) => (
+  <div
+    role="img"
+    aria-label="Synora"
+    style={{
+      width: size,
+      height: size,
+      flex: "none",
+      borderRadius: Math.round(size * 0.265),
+      background: "var(--accent)",
+      color: "var(--accent-ink)",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+    }}
+  >
+    <svg
+      width={Math.round(size * 0.7)}
+      height={Math.round(size * 0.7)}
+      viewBox="0 0 48 48"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      aria-hidden="true"
+    >
+      <circle cx="18" cy="24" r="11.5" strokeWidth="3.4" />
+      <circle cx="30" cy="24" r="11.5" strokeWidth="3.4" />
+      <path d="M24 14.2A11.5 11.5 0 0 1 24 33.8A11.5 11.5 0 0 1 24 14.2Z" fill="currentColor" stroke="none" />
+      <path d="M24 19.5V28.5M19.5 24H28.5" strokeWidth="2.8" style={{ stroke: "var(--accent)" }} />
+    </svg>
+  </div>
+);
+
+const Icon = ({ size = 16, sw = 2, children }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+    strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    {children}
+  </svg>
+);
+const PaperclipIcon = ({ size }) => (
+  <Icon size={size}><path d="M21 12.5l-8.5 8.5a5.5 5.5 0 0 1-7.8-7.8l8.8-8.8a3.7 3.7 0 0 1 5.2 5.2l-8.8 8.8a1.8 1.8 0 0 1-2.6-2.6l8-8" /></Icon>
+);
+const PlusIcon = ({ size }) => (<Icon size={size} sw={2.6}><path d="M12 5v14M5 12h14" /></Icon>);
+const ArrowUpIcon = ({ size }) => (<Icon size={size} sw={2.6}><path d="M12 19V5M5 12l7-7 7 7" /></Icon>);
+const CheckIcon = ({ size }) => (<Icon size={size} sw={3.2}><path d="M5 12.5l4.5 4.5L19 7.5" /></Icon>);
+const SunIcon = ({ size }) => (
+  <Icon size={size}><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" /></Icon>
+);
+const MoonIcon = ({ size }) => (<Icon size={size}><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" /></Icon>);
+const SignOutIcon = ({ size }) => (<Icon size={size}><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9" /></Icon>);
+
 const styles = {
-  page: {
-    minHeight: "100vh",
-    background: "linear-gradient(180deg, #f7f6f3 0%, #eef1f0 100%)",
-    display: "flex",
-    justifyContent: "center",
-    padding: "3rem 1rem",
-    fontFamily: "'Segoe UI', system-ui, sans-serif",
-  },
-  container: {
-    width: "100%",
-    maxWidth: "480px",
-    background: "#ffffff",
-    borderRadius: "20px",
-    padding: "1.75rem",
-    boxShadow: "0 4px 24px rgba(20, 40, 40, 0.06)",
-    border: "1px solid #eceae4",
-  },
-  header: { textAlign: "center", marginBottom: "1.5rem" },
-  logo: {
-    width: "40px",
-    height: "40px",
-    margin: "0 auto 10px",
-    borderRadius: "12px",
-    background: "linear-gradient(135deg, #2f6f65, #3f8f7f)",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    color: "#fff",
-    fontSize: "16px",
-    fontWeight: 600,
-  },
-  title: { fontSize: "19px", fontWeight: 600, margin: 0, color: "#1c2b28", letterSpacing: "-0.2px" },
-  subtitle: { fontSize: "13px", color: "#7c8b87", margin: "4px 0 0" },
-  audienceBox: {
-    background: "#f6f8f7",
-    border: "1px solid #e6e9e7",
-    borderRadius: "14px",
-    padding: "1rem",
-    marginBottom: "1rem",
-  },
-  audienceLabel: { fontSize: "12px", color: "#7c8b87", margin: "0 0 8px", fontWeight: 500 },
-  audienceButtons: { display: "flex", gap: "8px" },
+  emptyState: { fontSize: "13px", color: "var(--muted)", textAlign: "center", margin: "1.5rem 0" },
+  audienceButtons: { display: "flex", gap: "8px", flexWrap: "wrap" },
   audienceButton: {
     flex: 1,
     fontSize: "13px",
     padding: "9px",
-    border: "1px solid #e0e4e2",
+    border: "1px solid var(--border-strong)",
     borderRadius: "10px",
-    background: "#fff",
+    background: "var(--surface)",
     cursor: "pointer",
-    transition: "all 0.15s ease",
-    color: "#4a5754",
+    color: "var(--muted)",
+    fontFamily: "inherit",
   },
   audienceButtonActive: {
-    border: "1px solid #2f6f65",
-    background: "#eaf4f1",
-    color: "#215048",
-    fontWeight: 500,
-  },
-  fileChip: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    background: "#eaf4f1",
-    border: "1px solid #cfe6df",
-    borderRadius: "10px",
-    padding: "7px 12px",
-    fontSize: "12px",
-    marginBottom: "1rem",
-    color: "#215048",
-  },
-  fileChipRemove: {
-    background: "none",
-    border: "none",
-    cursor: "pointer",
-    fontSize: "15px",
-    color: "#5a6d68",
-  },
-  chatWindow: {
-    display: "flex",
-    flexDirection: "column",
-    gap: "12px",
-    marginBottom: "1rem",
-    minHeight: "220px",
-    maxHeight: "440px",
-    overflowY: "auto",
-    padding: "2px",
-  },
-  emptyState: { fontSize: "13px", color: "#a8b3af", textAlign: "center", marginTop: "3rem" },
-  bubble: {
-    maxWidth: "85%",
-    padding: "12px 16px",
-    borderRadius: "16px",
-    fontSize: "14px",
-    lineHeight: 1.65,
-    whiteSpace: "pre-wrap",
-    animation: "fadeSlideIn 0.25s ease",
-  },
-  userBubble: {
-    alignSelf: "flex-end",
-    background: "#215048",
-    color: "#ffffff",
-    borderBottomRightRadius: "4px",
-  },
-  assistantBubble: {
-    alignSelf: "flex-start",
-    background: "#f6f8f7",
-    border: "1px solid #e6e9e7",
-    color: "#2a3532",
-    borderBottomLeftRadius: "4px",
-  },
-  badgeRow: { display: "flex", gap: "6px", marginTop: "10px", flexWrap: "wrap" },
-  badge: {
-    fontSize: "11px",
-    padding: "4px 9px",
-    borderRadius: "8px",
-    background: "#fdf1de",
-    color: "#8a5a1f",
-    fontWeight: 500,
-  },
-  loadingText: {
-    fontSize: "13px",
-    color: "#5f8f83",
-    fontStyle: "italic",
-    animation: "pulse 1.4s ease-in-out infinite",
-  },
-  inputRow: { display: "flex", gap: "8px" },
-  uploadButton: {
-    width: "42px",
-    fontSize: "18px",
-    background: "#f6f8f7",
-    border: "1px solid #e6e9e7",
-    borderRadius: "10px",
-    cursor: "pointer",
-    color: "#4a5754",
-  },
-  input: {
-    flex: 1,
-    padding: "11px 14px",
-    fontSize: "14px",
-    border: "1px solid #e0e4e2",
-    borderRadius: "10px",
-    outline: "none",
+    border: "1px solid var(--accent)",
+    background: "var(--accent-soft)",
+    color: "var(--accent-text)",
+    fontWeight: 600,
   },
   sendButton: {
     padding: "10px 18px",
     fontSize: "14px",
-    background: "#215048",
-    color: "#fff",
+    background: "var(--accent)",
+    color: "var(--accent-ink)",
     border: "none",
     borderRadius: "10px",
     cursor: "pointer",
-    fontWeight: 500,
-  },
-  signOutButton: {
-    padding: "6px 12px",
-    fontSize: "12px",
-    background: "transparent",
-    color: "#5c6f69",
-    border: "1px solid #d8ded9",
-    borderRadius: "8px",
-    cursor: "pointer",
-    fontWeight: 500,
-  },
-  disclaimer: {
-    fontSize: "11px",
-    color: "#a8b3af",
-    textAlign: "center",
-    marginTop: "12px",
+    fontWeight: 600,
+    fontFamily: "inherit",
   },
   legalConsent: {
-    fontSize: "11px",
-    color: "#a8b3af",
+    fontSize: "12px",
+    color: "var(--muted)",
     textAlign: "center",
-    marginTop: "12px",
+    marginTop: "14px",
     lineHeight: 1.6,
   },
-  legalLink: {
-    color: "#5f8f83",
-    textDecoration: "underline",
-  },
+  legalLink: { color: "var(--accent-text)", textDecoration: "underline" },
   footer: {
     display: "flex",
     justifyContent: "center",
     gap: "8px",
-    marginTop: "16px",
-    fontSize: "11px",
-    color: "#a8b3af",
+    marginTop: "10px",
+    fontSize: "12px",
+    color: "var(--muted)",
   },
-  footerDot: {
-    color: "#c7d0cd",
-  },
+  footerDot: { color: "var(--border-strong)" },
   employeeBar: {
     display: "flex",
     alignItems: "center",
     justifyContent: "space-between",
-    background: "#eaf4f1",
-    border: "1px solid #cfe6df",
-    borderRadius: "10px",
-    padding: "9px 12px",
-    fontSize: "12px",
+    gap: "10px",
+    flexWrap: "wrap",
+    background: "var(--accent-soft)",
+    border: "1px solid var(--accent-border)",
+    borderRadius: "12px",
+    padding: "10px 14px",
+    fontSize: "13px",
     marginBottom: "1rem",
-    color: "#215048",
+    color: "var(--accent-text)",
   },
-  employeeBarText: { fontWeight: 500 },
+  employeeBarText: { fontWeight: 600 },
   employeeBarButton: {
-    fontSize: "11px",
-    padding: "6px 10px",
-    background: "#215048",
-    color: "#fff",
+    fontSize: "12px",
+    padding: "6px 12px",
+    background: "var(--accent)",
+    color: "var(--accent-ink)",
     border: "none",
     borderRadius: "8px",
     cursor: "pointer",
-    fontWeight: 500,
+    fontWeight: 600,
+    fontFamily: "inherit",
   },
   employeeBarButtonGhost: {
-    fontSize: "11px",
-    padding: "6px 10px",
+    fontSize: "12px",
+    padding: "6px 12px",
     background: "transparent",
-    color: "#215048",
-    border: "1px solid #cfe6df",
+    color: "var(--accent-text)",
+    border: "1px solid var(--accent-border)",
     borderRadius: "8px",
     cursor: "pointer",
+    fontFamily: "inherit",
   },
   formPanel: {
-    background: "#f6f8f7",
-    border: "1px solid #e6e9e7",
+    background: "var(--surface2)",
+    border: "1px solid var(--border)",
     borderRadius: "14px",
-    padding: "1rem",
+    padding: "1.1rem",
     marginBottom: "1rem",
   },
-  formTitle: { fontSize: "14px", fontWeight: 600, color: "#1c2b28", margin: "0 0 4px" },
-  formSubtitle: { fontSize: "11.5px", color: "#7c8b87", margin: "0 0 12px" },
-  formLabel: { fontSize: "12px", color: "#4a5754", fontWeight: 500, display: "block", margin: "10px 0 6px" },
+  formTitle: { fontSize: "15px", fontWeight: 700, color: "var(--text)", margin: "0 0 4px" },
+  formSubtitle: { fontSize: "12.5px", color: "var(--muted)", margin: "0 0 12px", lineHeight: 1.5 },
+  formLabel: { fontSize: "12.5px", color: "var(--muted)", fontWeight: 600, display: "block", margin: "10px 0 6px" },
   formInput: {
     width: "100%",
     padding: "9px 12px",
-    fontSize: "13px",
-    border: "1px solid #e0e4e2",
+    fontSize: "14px",
+    border: "1px solid var(--border-strong)",
     borderRadius: "10px",
     outline: "none",
     boxSizing: "border-box",
+    background: "var(--surface)",
+    color: "var(--text)",
+    fontFamily: "inherit",
   },
-  formActions: {
-    display: "flex",
-    justifyContent: "flex-end",
-    gap: "8px",
-    marginTop: "14px",
-  },
+  formActions: { display: "flex", justifyContent: "flex-end", gap: "8px", marginTop: "14px" },
   formCancelButton: {
     padding: "10px 16px",
     fontSize: "13px",
     background: "transparent",
-    color: "#5a6d68",
-    border: "1px solid #e0e4e2",
+    color: "var(--muted)",
+    border: "1px solid var(--border-strong)",
     borderRadius: "10px",
     cursor: "pointer",
+    fontFamily: "inherit",
   },
   sliderLabelRow: { display: "flex", justifyContent: "space-between", alignItems: "center" },
-  sliderValue: { fontSize: "12px", color: "#215048", fontWeight: 600 },
+  sliderValue: { fontSize: "12.5px", color: "var(--accent-text)", fontWeight: 700 },
   pricingPanel: {
-    background: "#f6f8f7",
-    border: "1px solid #e6e9e7",
+    background: "var(--surface2)",
+    border: "1px solid var(--border)",
     borderRadius: "14px",
     padding: "1.25rem",
     marginBottom: "1rem",
   },
-  pricingCards: {
-    display: "flex",
-    gap: "10px",
-    marginTop: "14px",
-  },
+  pricingCards: { display: "flex", gap: "10px", marginTop: "14px", flexWrap: "wrap" },
   pricingCard: {
-    flex: 1,
-    background: "#fff",
-    border: "1px solid #e0e4e2",
+    flex: "1 1 160px",
+    background: "var(--surface)",
+    border: "1px solid var(--border-strong)",
     borderRadius: "12px",
     padding: "14px",
     textAlign: "center",
     position: "relative",
   },
-  pricingCardHighlighted: {
-    border: "1.5px solid #2f6f65",
-  },
+  pricingCardHighlighted: { border: "1.5px solid var(--accent)" },
   pricingBadge: {
     position: "absolute",
     top: "-9px",
     left: "50%",
     transform: "translateX(-50%)",
-    background: "#215048",
-    color: "#fff",
-    fontSize: "10px",
-    fontWeight: 600,
+    background: "var(--accent)",
+    color: "var(--accent-ink)",
+    fontSize: "10.5px",
+    fontWeight: 700,
     padding: "3px 8px",
     borderRadius: "6px",
+    margin: 0,
   },
-  pricingPlanName: { fontSize: "14px", fontWeight: 600, color: "#1c2b28", margin: "6px 0 2px" },
-  pricingPrice: { fontSize: "12px", color: "#7c8b87", margin: "0 0 12px" },
-  pricingNote: { fontSize: "11px", color: "#a8b3af", textAlign: "center", marginTop: "12px" },
-  downloadBox: {
-    background: "#eaf4f1",
-    border: "1px solid #cfe6df",
-    borderRadius: "10px",
-    padding: "12px",
-    marginBottom: "1rem",
-  },
-  downloadLabel: { fontSize: "12px", fontWeight: 500, color: "#215048", margin: "0 0 8px" },
-  downloadButton: {
-    flex: 1,
-    fontSize: "12px",
-    padding: "9px",
-    background: "#fff",
-    border: "1px solid #cfe6df",
-    borderRadius: "8px",
-    cursor: "pointer",
-    color: "#215048",
-    fontWeight: 500,
-  },
+  pricingPlanName: { fontSize: "14px", fontWeight: 700, color: "var(--text)", margin: "6px 0 2px" },
+  pricingPrice: { fontSize: "12.5px", color: "var(--muted)", margin: "0 0 12px" },
+  pricingNote: { fontSize: "12px", color: "var(--muted)", textAlign: "center", marginTop: "12px" },
 };
 
 const Footer = () => (
@@ -1638,60 +1712,159 @@ const formatChatDate = (iso) => {
 
 const GlobalStyle = () => (
   <style>{`
-    .synora-shell {
-      display: flex; gap: 16px; align-items: flex-start; justify-content: center;
-      width: 100%; max-width: 760px;
+    @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Newsreader:wght@400;500;600&family=Public+Sans:wght@400;500;600;700&display=swap');
+
+    .synora-app[data-theme="light"] {
+      --bg:#f3f6f5; --surface:#ffffff; --surface2:#f7faf9; --border:#dbe4e1; --border-strong:#c3d0cc;
+      --text:#14211e; --muted:#4a5b57; --accent:#0f766e; --accent-ink:#ffffff; --accent-soft:#e3f2ef;
+      --accent-text:#0b4f49; --accent-border:#bfe0da; --seg-bg:#e6ecea; --warn-bg:#fdf1d8;
+      --warn-text:#6a4a12; --warn-border:#f0dba8; --danger:#b3402f; --danger-bg:#fbe9e5;
     }
+    .synora-app[data-theme="dark"] {
+      --bg:#0b100e; --surface:#0f1513; --surface2:#121a17; --border:#1f2b27; --border-strong:#2a3a35;
+      --text:#e6efec; --muted:#93a8a1; --accent:#62e3b1; --accent-ink:#04211a; --accent-soft:#0f2b23;
+      --accent-text:#8ff0cb; --accent-border:#1d4a3a; --seg-bg:#121a17; --warn-bg:#2a2310;
+      --warn-text:#fbbf24; --warn-border:#5b4514; --danger:#f08a78; --danger-bg:#2c1612;
+    }
+    body { margin: 0; }
+    .synora-app {
+      min-height: 100vh; background: var(--bg); color: var(--text);
+      font-family: 'Public Sans', system-ui, sans-serif; font-size: 14px;
+    }
+    .synora-app *, .synora-app *::before, .synora-app *::after { box-sizing: border-box; }
+    .synora-app button { font-family: inherit; }
+    .synora-app button:focus-visible, .synora-app input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .synora-app button:disabled { cursor: default; }
+
+    .synora-shell { display: flex; min-height: 100vh; }
+
+    /* shared bits */
+    .synora-brand { display: flex; align-items: center; gap: 10px; }
+    .synora-brand-center { justify-content: center; flex-direction: column; gap: 12px; }
+    .synora-wordmark { font-family: 'Newsreader', Georgia, serif; font-size: 22px; font-weight: 600; letter-spacing: -0.2px; margin: 0; }
+    .synora-eyebrow { font-size: 12px; font-weight: 700; color: var(--muted); letter-spacing: 0.06em; text-transform: uppercase; }
+    .synora-muted { color: var(--muted); font-size: 14px; }
+    .synora-muted-sm { color: var(--muted); font-size: 12px; }
+    .synora-mono { font-family: 'IBM Plex Mono', monospace; font-size: 12px; }
+    .synora-row-between { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .synora-group { display: flex; flex-direction: column; gap: 10px; }
+    .synora-card { display: flex; flex-direction: column; gap: 2px; border: 1px solid var(--border); background: var(--surface2); border-radius: 10px; padding: 11px 12px; }
+    .synora-card-accent { border-color: var(--accent-border); background: var(--accent-soft); }
+    .synora-card-dashed { border: 1px dashed var(--border-strong); }
+    .synora-card-title { font-size: 13.5px; font-weight: 600; }
+    .synora-pill { font-size: 12px; font-weight: 600; color: var(--accent-text); background: var(--accent-soft); border-radius: 999px; padding: 3px 10px; }
+    .synora-pill-muted { color: var(--muted); background: var(--seg-bg); }
+    .synora-linkbtn { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600; color: var(--accent-text); background: transparent; border: none; cursor: pointer; padding: 2px 0; }
+    .synora-linkbtn:disabled { opacity: 0.6; }
+    .synora-x { background: none; border: none; color: var(--muted); font-size: 18px; line-height: 1; cursor: pointer; padding: 0 2px; }
+    .synora-ghostbtn { flex: 1; padding: 9px 10px; border-radius: 10px; border: 1px solid var(--accent-border); background: var(--surface); color: var(--accent-text); font-size: 13px; font-weight: 600; cursor: pointer; }
+    .synora-ghostbtn:disabled { opacity: 0.6; }
+    .synora-dl-row { display: flex; gap: 8px; }
+
+    /* segmented controls */
+    .synora-segwrap { display: flex; background: var(--seg-bg); border-radius: 10px; padding: 3px; gap: 2px; }
+    .synora-app .seg { flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px; border: none; cursor: pointer; background: transparent; color: var(--muted); border-radius: 8px; padding: 8px; font-size: 13px; font-weight: 600; }
+    .synora-app .seg[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent-text); box-shadow: inset 0 0 0 1px var(--accent-border); }
+    .synora-theme { flex: none; }
+    .synora-theme .seg { width: 36px; height: 30px; padding: 0; flex: none; }
+
+    /* sidebar */
     .synora-sidebar {
-      width: 240px; flex: none; box-sizing: border-box;
-      background: #ffffff; border: 1px solid #eceae4; border-radius: 20px;
-      box-shadow: 0 4px 24px rgba(20, 40, 40, 0.06);
-      padding: 1rem; display: flex; flex-direction: column;
-      position: sticky; top: 1.5rem; max-height: calc(100vh - 3rem);
+      width: 300px; flex: none; background: var(--surface); border-right: 1px solid var(--border);
+      padding: 22px 18px; display: flex; flex-direction: column; gap: 20px;
+      position: sticky; top: 0; height: 100vh; overflow-y: auto;
     }
-    .synora-sidebar-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
-    .synora-sidebar-title { font-size: 13px; font-weight: 600; color: #1c2b28; }
-    .synora-newchat {
-      font-size: 12px; font-weight: 500; color: #2f6f65; background: #eef5f3;
-      border: none; border-radius: 8px; padding: 5px 10px; cursor: pointer;
-    }
-    .synora-newchat:disabled, .synora-chat-open:disabled, .synora-chat-del:disabled { opacity: 0.5; cursor: default; }
-    .synora-sidebar-list { overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
-    .synora-sidebar-empty { font-size: 12px; color: #7c8b87; margin: 8px 2px; line-height: 1.5; }
-    .synora-chat-row { display: flex; align-items: center; border-radius: 10px; }
-    .synora-chat-row:hover { background: #f4f6f5; }
-    .synora-chat-row.active { background: #e6f0ed; }
-    .synora-chat-open {
-      flex: 1; min-width: 0; text-align: left; background: none; border: none; cursor: pointer;
-      padding: 8px 10px; display: flex; flex-direction: column; gap: 2px; font-family: inherit;
-    }
-    .synora-chat-name {
-      font-size: 13px; color: #1c2b28; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-    }
-    .synora-chat-date { font-size: 11px; color: #9aa7a3; }
-    .synora-chat-del {
-      background: none; border: none; color: #9aa7a3; font-size: 18px; line-height: 1;
-      cursor: pointer; padding: 6px 10px; border-radius: 8px; opacity: 0;
-    }
-    .synora-chat-row:hover .synora-chat-del, .synora-chat-row.active .synora-chat-del,
-    .synora-chat-del:focus-visible { opacity: 1; }
-    .synora-chat-del:hover { color: #b3402f; }
-    .synora-chats-toggle, .synora-backdrop { display: none; }
+    .synora-tabbody { display: flex; flex-direction: column; gap: 20px; }
+    .synora-chatlist { gap: 10px; min-height: 0; }
+    .synora-primary-wide { width: 100%; padding: 10px 12px; border-radius: 10px; background: var(--accent); color: var(--accent-ink); border: none; font-size: 13.5px; font-weight: 600; display: flex; align-items: center; justify-content: center; gap: 8px; cursor: pointer; }
+    .synora-primary-wide:disabled { opacity: 0.5; }
+    .synora-sidebar-list { display: flex; flex-direction: column; gap: 2px; }
+    .synora-sidebar-empty { font-size: 12.5px; color: var(--muted); margin: 8px 2px; line-height: 1.5; }
+    .synora-chat-row { display: flex; align-items: center; border: 1px solid transparent; border-radius: 10px; }
+    .synora-chat-row:hover { background: var(--surface2); }
+    .synora-chat-row.active { background: var(--accent-soft); border-color: var(--accent-border); }
+    .synora-chat-open { flex: 1; min-width: 0; text-align: left; background: none; border: none; cursor: pointer; color: var(--text); padding: 9px 12px; display: flex; flex-direction: column; gap: 2px; }
+    .synora-chat-name { font-size: 13.5px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .synora-chat-row.active .synora-chat-name { font-weight: 600; }
+    .synora-chat-date { font-size: 12px; color: var(--muted); }
+    .synora-chat-del { background: none; border: none; color: var(--muted); font-size: 18px; line-height: 1; cursor: pointer; padding: 6px 10px; border-radius: 8px; opacity: 0; }
+    .synora-chat-row:hover .synora-chat-del, .synora-chat-row.active .synora-chat-del, .synora-chat-del:focus-visible { opacity: 1; }
+    .synora-chat-del:hover { color: var(--danger); }
+    .synora-chat-open:disabled, .synora-chat-del:disabled { opacity: 0.5; }
     @media (hover: none) { .synora-chat-del { opacity: 1; } }
+
+    /* profile row (above the plan card) */
+    .synora-profile { width: 100%; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 12px; border: 1px solid transparent; background: transparent; color: var(--text); text-align: left; margin-bottom: -8px; }
+    button.synora-profile { cursor: pointer; }
+    button.synora-profile:hover { background: var(--surface2); border-color: var(--border); }
+    .synora-profile-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+    .synora-avatar { width: 34px; height: 34px; flex: none; border-radius: 50%; background: var(--accent); color: var(--accent-ink); display: flex; align-items: center; justify-content: center; }
+
+    .synora-plan { border: 1px solid var(--border); background: var(--surface2); border-radius: 14px; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+
+    /* main */
+    .synora-main { flex: 1 1 auto; min-width: 0; height: 100vh; display: flex; flex-direction: column; }
+    .synora-topbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 22px 40px 0; }
+    .synora-audience { display: flex; gap: 8px; flex-wrap: wrap; }
+    .synora-audience-btn { padding: 7px 16px; border-radius: 999px; border: 1px solid var(--border-strong); background: var(--surface); color: var(--muted); font-size: 13px; font-weight: 500; cursor: pointer; }
+    .synora-audience-btn[aria-pressed="true"] { border-color: var(--accent); background: var(--accent); color: var(--accent-ink); font-weight: 600; }
+    .synora-audience-btn:disabled { opacity: 0.6; }
+    .synora-scroll { flex: 1 1 auto; overflow-y: auto; padding: 24px 40px 8px; }
+    .synora-column { max-width: 760px; width: 100%; margin: 0 auto; display: flex; flex-direction: column; gap: 22px; }
+    .synora-h1 { margin: 0; font-family: 'Newsreader', Georgia, serif; font-size: 32px; line-height: 1.2; font-weight: 500; letter-spacing: -0.3px; }
+    .synora-h2 { margin: 0; font-family: 'Newsreader', Georgia, serif; font-size: 26px; line-height: 1.25; font-weight: 500; letter-spacing: -0.2px; }
+    .synora-empty { display: flex; flex-direction: column; gap: 10px; padding-top: 8vh; }
+    .synora-q { display: flex; flex-direction: column; gap: 8px; animation: fadeSlideIn 0.25s ease; }
+    .synora-a { font-family: 'Newsreader', Georgia, serif; font-size: 19.5px; line-height: 1.65; white-space: pre-wrap; animation: fadeSlideIn 0.25s ease; padding-bottom: 18px; border-bottom: 1px solid var(--border); }
+    .synora-a-system { font-family: 'Public Sans', system-ui, sans-serif; font-size: 13.5px; color: var(--muted); border-bottom: none; padding-bottom: 0; }
+    .synora-a-error { font-family: 'Public Sans', system-ui, sans-serif; font-size: 13.5px; color: var(--danger); background: var(--danger-bg); border-radius: 10px; padding: 10px 14px; border-bottom: none; }
+    .synora-badges { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; font-family: 'Public Sans', system-ui, sans-serif; }
+    .synora-badge { font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 999px; background: var(--warn-bg); color: var(--warn-text); border: 1px solid var(--warn-border); }
+    .synora-badge-urgent { background: var(--danger-bg); color: var(--danger); border-color: var(--danger); }
+    .synora-loading { margin: 0; font-size: 13px; color: var(--accent-text); font-style: italic; animation: pulse 1.4s ease-in-out infinite; }
+
+    .synora-composer-wrap { padding: 8px 40px 20px; }
+    .synora-composer { max-width: 760px; margin: 0 auto; display: flex; align-items: center; gap: 8px; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 16px; padding: 8px 8px 8px 10px; }
+    .synora-composer-wrap > p, .synora-composer-wrap > div:last-child { max-width: 760px; margin-left: auto; margin-right: auto; }
+    .synora-iconbtn { width: 40px; height: 40px; flex: none; border-radius: 10px; border: none; background: transparent; color: var(--muted); cursor: pointer; display: flex; align-items: center; justify-content: center; }
+    .synora-input { flex: 1; min-width: 0; padding: 10px 6px; font-family: inherit; font-size: 15px; border: none; background: transparent; color: var(--text); outline: none; }
+    .synora-input::placeholder { color: var(--muted); }
+    .synora-send { width: 42px; height: 42px; flex: none; border-radius: 50%; border: none; background: var(--accent); color: var(--accent-ink); cursor: pointer; display: flex; align-items: center; justify-content: center; }
+    .synora-send:disabled { opacity: 0.45; }
+
+    /* agent trace */
+    .synora-trace { width: 320px; flex: none; background: var(--surface); border-left: 1px solid var(--border); padding: 22px 22px 26px; display: flex; flex-direction: column; gap: 18px; position: sticky; top: 0; height: 100vh; overflow-y: auto; }
+    .synora-steps { display: flex; flex-direction: column; }
+    .synora-step { display: flex; gap: 12px; }
+    .synora-step-rail { display: flex; flex-direction: column; align-items: center; }
+    .synora-step-body { display: flex; flex-direction: column; gap: 2px; }
+    .synora-dot { width: 20px; height: 20px; border-radius: 50%; border: 1px solid var(--accent); display: flex; align-items: center; justify-content: center; flex: none; }
+    .synora-dot.done { background: var(--accent-soft); color: var(--accent-text); }
+    .synora-dot.active { border-style: dashed; animation: pulse 1.2s ease-in-out infinite; }
+    .synora-line { width: 2px; flex-grow: 1; min-height: 14px; background: var(--border); }
+
+    /* signed-out */
+    .synora-auth-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 2rem 1rem; }
+    .synora-auth-card { width: 100%; max-width: 400px; background: var(--surface); border: 1px solid var(--border); border-radius: 20px; padding: 2rem 1.75rem; }
+
+    .synora-chats-toggle, .synora-backdrop { display: none; }
+    .synora-chats-toggle { padding: 7px 14px; border-radius: 10px; border: 1px solid var(--border-strong); background: var(--surface); color: var(--accent-text); font-size: 13px; font-weight: 600; cursor: pointer; }
+
+    @media (max-width: 1180px) { .synora-trace { display: none; } }
     @media (max-width: 820px) {
-      .synora-shell { display: block; max-width: 480px; }
       .synora-sidebar {
-        position: fixed; top: 0; left: 0; bottom: 0; max-height: none; z-index: 50;
-        width: 280px; max-width: 85vw; border-radius: 0 20px 20px 0;
-        transform: translateX(-105%); transition: transform 0.2s ease;
+        position: fixed; top: 0; left: 0; bottom: 0; height: auto; z-index: 50;
+        width: 300px; max-width: 88vw; transform: translateX(-105%); transition: transform 0.2s ease;
       }
       .synora-sidebar.open { transform: none; }
-      .synora-backdrop { display: block; position: fixed; inset: 0; background: rgba(0, 0, 0, 0.35); z-index: 40; }
-      .synora-chats-toggle {
-        display: block; position: absolute; top: 1rem; left: 1rem; z-index: 1;
-        font-size: 12px; font-weight: 500; color: #2f6f65; background: #eef5f3;
-        border: none; border-radius: 8px; padding: 6px 12px; cursor: pointer;
-      }
+      .synora-backdrop { display: block; position: fixed; inset: 0; background: rgba(0, 0, 0, 0.4); z-index: 40; }
+      .synora-chats-toggle { display: block; }
+      .synora-topbar { padding: 16px 16px 0; }
+      .synora-scroll { padding: 18px 16px 8px; }
+      .synora-composer-wrap { padding: 8px 16px 16px; }
+      .synora-h1 { font-size: 26px; }
+      .synora-h2 { font-size: 22px; }
+      .synora-a { font-size: 18px; }
     }
     @keyframes fadeSlideIn {
       from { opacity: 0; transform: translateY(6px); }
